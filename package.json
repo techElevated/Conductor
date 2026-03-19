@@ -12,9 +12,22 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
-  "keywords": ["ai", "claude", "claude-code", "multi-agent", "session-management", "coding-agent", "approval", "orchestration"],
-  "activationEvents": ["onStartupFinished"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "claude",
+    "claude-code",
+    "multi-agent",
+    "session-management",
+    "coding-agent",
+    "approval",
+    "orchestration"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -52,6 +65,7 @@
     "@types/mocha": "^10.0.6",
     "@types/node": "^20.11.5",
     "@types/sinon": "^17.0.3",
+    "@types/uuid": "^10.0.0",
     "@types/vscode": "^1.85.0",
     "@typescript-eslint/eslint-plugin": "^7.0.2",
     "@typescript-eslint/parser": "^7.0.2",
