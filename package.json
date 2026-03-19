@@ -298,13 +298,13 @@
     "keybindings": [
       {
         "command": "conductor.approveAction",
-        "key": "cmd+shift+a",
+        "key": "ctrl+shift+a",
         "mac": "cmd+shift+a",
         "when": "conductor.hasPendingApprovals"
       },
       {
         "command": "conductor.denyAction",
-        "key": "cmd+shift+d",
+        "key": "ctrl+shift+d",
         "mac": "cmd+shift+d",
         "when": "conductor.hasPendingApprovals"
       }
