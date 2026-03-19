@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Hub center -->
+  <circle cx="12" cy="12" r="2.5"/>
+  <!-- Spokes to session nodes -->
+  <line x1="12" y1="9.5" x2="12" y2="3"/>
+  <line x1="14.2" y1="13.2" x2="20" y2="17"/>
+  <line x1="9.8" y1="13.2" x2="4" y2="17"/>
+  <!-- Session nodes -->
+  <circle cx="12" cy="2" r="1.5"/>
+  <circle cx="21" cy="17.5" r="1.5"/>
+  <circle cx="3" cy="17.5" r="1.5"/>
+</svg>

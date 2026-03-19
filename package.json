@@ -1,0 +1,77 @@
+{
+  "name": "conductor",
+  "displayName": "Conductor",
+  "description": "Session management for multi-agent AI coding workflows. One conductor. Many sessions.",
+  "version": "0.1.0",
+  "publisher": "techElevated",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/techElevated/conductor"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "keywords": ["ai", "claude", "claude-code", "multi-agent", "session-management", "coding-agent", "approval", "orchestration"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "conductor",
+          "title": "Conductor",
+          "icon": "media/conductor-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "conductor": []
+    },
+    "commands": [],
+    "configuration": {
+      "title": "Conductor",
+      "properties": {}
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test",
+    "test-compile": "tsc -p . --outDir out"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.3.11",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.5",
+    "@types/sinon": "^17.0.3",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.2",
+    "@typescript-eslint/parser": "^7.0.2",
+    "@vscode/test-cli": "^0.0.4",
+    "@vscode/test-electron": "^2.3.9",
+    "@vscode/vsce": "^2.24.0",
+    "chai": "^4.4.1",
+    "eslint": "^8.56.0",
+    "mocha": "^10.2.0",
+    "nyc": "^15.1.0",
+    "prettier": "^3.2.4",
+    "sinon": "^17.0.1",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "webpack": "^5.90.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "dagre": "^0.8.5",
+    "uuid": "^9.0.1"
+  }
+}
