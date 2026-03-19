@@ -228,6 +228,16 @@
           "group": "navigation"
         },
         {
+          "command": "conductor.approveAll",
+          "when": "view == conductor.approvals",
+          "group": "navigation@1"
+        },
+        {
+          "command": "conductor.denyAll",
+          "when": "view == conductor.approvals",
+          "group": "navigation@2"
+        },
+        {
           "command": "conductor.addPrompt",
           "when": "view == conductor.promptQueue",
           "group": "navigation"
@@ -258,6 +268,16 @@
           "command": "conductor.openInteraction",
           "when": "viewItem =~ /^session-/",
           "group": "session@3"
+        },
+        {
+          "command": "conductor.approveAction",
+          "when": "viewItem == approval-pending",
+          "group": "inline@1"
+        },
+        {
+          "command": "conductor.denyAction",
+          "when": "viewItem == approval-pending",
+          "group": "inline@2"
         }
       ],
       "commandPalette": [
