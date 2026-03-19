@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-{{nonce}}';">
+  <title>Conductor — Dependency Graph</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: var(--vscode-font-family, system-ui);
+      font-size: var(--vscode-font-size, 13px);
+      color: var(--vscode-foreground, #ccc);
+      background: var(--vscode-editor-background, #1e1e1e);
+      overflow: hidden;
+    }
+
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--vscode-sideBar-background, #252526);
+      border-bottom: 1px solid var(--vscode-panel-border, #333);
+    }
+
+    #toolbar .summary {
+      flex: 1;
+      font-weight: 600;
+    }
+
+    #toolbar button {
+      padding: 4px 8px;
+      background: var(--vscode-button-background, #0e639c);
+      color: var(--vscode-button-foreground, #fff);
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    #toolbar button:hover {
+      background: var(--vscode-button-hoverBackground, #1177bb);
+    }
+
+    #canvas {
+      width: 100%;
+      height: calc(100vh - 40px);
+      overflow: auto;
+      cursor: grab;
+    }
+
+    #canvas:active { cursor: grabbing; }
+
+    svg { display: block; }
+
+    /* Node styling */
+    .dag-node {
+      cursor: pointer;
+    }
+
+    .dag-node rect {
+      rx: 6;
+      ry: 6;
+      stroke-width: 2;
+    }
+
+    .dag-node text {
+      font-size: 12px;
+      fill: var(--vscode-foreground, #ccc);
+      pointer-events: none;
+    }
+
+    .dag-node .node-label {
+      font-weight: 600;
+    }
+
+    .dag-node .node-status {
+      font-size: 10px;
+      opacity: 0.7;
+    }
+
+    .dag-node:hover rect {
+      filter: brightness(1.2);
+    }
+
+    /* Status colors */
+    .node-complete rect  { fill: #2ea04333; stroke: #2ea043; }
+    .node-running rect   { fill: #d29b0033; stroke: #d29b00; }
+    .node-queued rect    { fill: #388bfd33; stroke: #388bfd; }
+    .node-error rect     { fill: #f8514933; stroke: #f85149; }
+    .node-blocked rect   { fill: #f8514933; stroke: #f85149; }
+    .node-launched rect  { fill: #2ea04333; stroke: #2ea043; }
+
+    /* Edge styling */
+    .dag-edge path {
+      fill: none;
+      stroke: var(--vscode-foreground, #666);
+      stroke-width: 1.5;
+      opacity: 0.5;
+    }
+
+    .dag-edge marker path {
+      fill: var(--vscode-foreground, #666);
+    }
+
+    /* Empty state */
+    #empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: calc(100vh - 40px);
+      opacity: 0.6;
+    }
+
+    #empty-state .icon { font-size: 48px; margin-bottom: 16px; }
+    #empty-state .text { font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <span class="summary" id="summary">Dependency Graph</span>
+    <button id="btn-fit" title="Fit to view">Fit</button>
+    <button id="btn-zoom-in" title="Zoom in">+</button>
+    <button id="btn-zoom-out" title="Zoom out">−</button>
+  </div>
+  <div id="canvas"></div>
+
+  <script nonce="{{nonce}}">
+    // @ts-check
+    const vscode = acquireVsCodeApi();
+
+    /** @type {{ nodes: Array<{id:string, name:string, status:string, complexity:string}>, edges: Array<{from:string, to:string}> } | null} */
+    let graphData = null;
+    let scale = 1;
+    let panX = 0;
+    let panY = 0;
+
+    // ── Message handler ───────────────────────────────────
+    window.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (msg.type === 'updateGraph') {
+        graphData = msg.data;
+        render();
+      }
+    });
+
+    // ── Rendering ─────────────────────────────────────────
+    function render() {
+      const canvas = document.getElementById('canvas');
+      if (!canvas) return;
+
+      if (!graphData || graphData.nodes.length === 0) {
+        canvas.innerHTML = `
+          <div id="empty-state">
+            <div class="icon">⛓</div>
+            <div class="text">No dependency chains defined</div>
+          </div>`;
+        document.getElementById('summary').textContent = 'No chains';
+        return;
+      }
+
+      // Update summary
+      const counts = {};
+      graphData.nodes.forEach(n => { counts[n.status] = (counts[n.status] || 0) + 1; });
+      const parts = Object.entries(counts).map(([k,v]) => `${v} ${k}`);
+      document.getElementById('summary').textContent =
+        `Chain: ${parts.join(', ')} (${graphData.nodes.length} total)`;
+
+      // Simple layout: topological layers
+      const layers = computeLayers(graphData.nodes, graphData.edges);
+      const NODE_W = 180;
+      const NODE_H = 50;
+      const GAP_X = 60;
+      const GAP_Y = 40;
+      const PADDING = 30;
+
+      // Assign positions
+      const positions = {};
+      let maxX = 0;
+      let maxY = 0;
+
+      layers.forEach((layer, layerIdx) => {
+        layer.forEach((nodeId, nodeIdx) => {
+          const x = PADDING + layerIdx * (NODE_W + GAP_X);
+          const y = PADDING + nodeIdx * (NODE_H + GAP_Y);
+          positions[nodeId] = { x, y };
+          maxX = Math.max(maxX, x + NODE_W);
+          maxY = Math.max(maxY, y + NODE_H);
+        });
+      });
+
+      const svgW = maxX + PADDING;
+      const svgH = maxY + PADDING;
+
+      // Build SVG
+      let svg = `<svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}">`;
+
+      // Defs for arrow marker
+      svg += `<defs>
+        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+          <polygon points="0 0, 10 3.5, 0 7" fill="var(--vscode-foreground, #666)" opacity="0.5"/>
+        </marker>
+      </defs>`;
+
+      // Edges
+      for (const edge of graphData.edges) {
+        const from = positions[edge.from];
+        const to = positions[edge.to];
+        if (!from || !to) continue;
+
+        const x1 = from.x + NODE_W;
+        const y1 = from.y + NODE_H / 2;
+        const x2 = to.x;
+        const y2 = to.y + NODE_H / 2;
+        const midX = (x1 + x2) / 2;
+
+        svg += `<g class="dag-edge">
+          <path d="M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}" marker-end="url(#arrowhead)"/>
+        </g>`;
+      }
+
+      // Nodes
+      for (const node of graphData.nodes) {
+        const pos = positions[node.id];
+        if (!pos) continue;
+
+        const statusClass = 'node-' + node.status;
+        svg += `<g class="dag-node ${statusClass}" data-id="${node.id}"
+                   transform="translate(${pos.x},${pos.y})">
+          <rect width="${NODE_W}" height="${NODE_H}"/>
+          <text class="node-label" x="${NODE_W/2}" y="20" text-anchor="middle">
+            ${escapeHtml(truncate(node.name, 22))}
+          </text>
+          <text class="node-status" x="${NODE_W/2}" y="36" text-anchor="middle">
+            ${node.status} · ${node.complexity}
+          </text>
+        </g>`;
+      }
+
+      svg += '</svg>';
+      canvas.innerHTML = svg;
+
+      // Click handlers
+      canvas.querySelectorAll('.dag-node').forEach(el => {
+        el.addEventListener('click', () => {
+          const nodeId = el.getAttribute('data-id');
+          if (nodeId) {
+            vscode.postMessage({ type: 'nodeClicked', nodeId });
+          }
+        });
+      });
+    }
+
+    // ── Layout: topological layers ──────────────────────
+    function computeLayers(nodes, edges) {
+      const nodeIds = new Set(nodes.map(n => n.id));
+      const inDegree = {};
+      const adj = {};
+      nodes.forEach(n => { inDegree[n.id] = 0; adj[n.id] = []; });
+
+      edges.forEach(e => {
+        if (nodeIds.has(e.from) && nodeIds.has(e.to)) {
+          adj[e.from].push(e.to);
+          inDegree[e.to] = (inDegree[e.to] || 0) + 1;
+        }
+      });
+
+      const layers = [];
+      let current = Object.keys(inDegree).filter(id => inDegree[id] === 0);
+
+      while (current.length > 0) {
+        layers.push([...current]);
+        const next = [];
+        for (const id of current) {
+          for (const child of (adj[id] || [])) {
+            inDegree[child]--;
+            if (inDegree[child] === 0) {
+              next.push(child);
+            }
+          }
+        }
+        current = next;
+      }
+
+      return layers;
+    }
+
+    // ── Zoom controls ────────────────────────────────────
+    document.getElementById('btn-zoom-in')?.addEventListener('click', () => {
+      scale = Math.min(scale * 1.2, 3);
+      applyTransform();
+    });
+
+    document.getElementById('btn-zoom-out')?.addEventListener('click', () => {
+      scale = Math.max(scale / 1.2, 0.3);
+      applyTransform();
+    });
+
+    document.getElementById('btn-fit')?.addEventListener('click', () => {
+      scale = 1;
+      panX = 0;
+      panY = 0;
+      applyTransform();
+    });
+
+    function applyTransform() {
+      const svg = document.querySelector('#canvas svg');
+      if (svg) {
+        svg.style.transform = `scale(${scale}) translate(${panX}px, ${panY}px)`;
+        svg.style.transformOrigin = '0 0';
+      }
+    }
+
+    // ── Pan with mouse ───────────────────────────────────
+    let isPanning = false;
+    let startX = 0;
+    let startY = 0;
+
+    const canvasEl = document.getElementById('canvas');
+    canvasEl?.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.dag-node')) return;
+      isPanning = true;
+      startX = e.clientX - panX;
+      startY = e.clientY - panY;
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isPanning) return;
+      panX = e.clientX - startX;
+      panY = e.clientY - startY;
+      applyTransform();
+    });
+
+    window.addEventListener('mouseup', () => { isPanning = false; });
+
+    // ── Helpers ──────────────────────────────────────────
+    function escapeHtml(str) {
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function truncate(str, len) {
+      return str.length > len ? str.slice(0, len - 1) + '…' : str;
+    }
+
+    // Signal ready
+    vscode.postMessage({ type: 'ready' });
+  </script>
+</body>
+</html>
