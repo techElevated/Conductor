@@ -105,7 +105,7 @@ export const DEFAULT_TERMINAL_TYPE: TerminalType = 'vscode';
 
 // ── Notification styles ─────────────────────────────────────────
 
-export type NotificationStyle = 'toast' | 'sound' | 'toast-and-badge' | 'none';
+export type NotificationStyle = 'badge-only' | 'toast' | 'sound' | 'toast-and-badge' | 'toast-badge-sound' | 'none';
 
 export const DEFAULT_NOTIFICATION_STYLE: NotificationStyle = 'toast-and-badge';
 

@@ -339,7 +339,15 @@
         "conductor.notifications.style": {
           "type": "string",
           "default": "toast-and-badge",
-          "enum": ["toast", "sound", "toast-and-badge", "none"],
+          "enum": ["badge-only", "toast", "sound", "toast-and-badge", "toast-badge-sound", "none"],
+          "enumDescriptions": [
+            "Badge count only — no popups",
+            "VS Code toast notification only",
+            "System sound only",
+            "Toast notification + badge count (default)",
+            "Toast + badge + system sound",
+            "No notifications"
+          ],
           "description": "How Conductor notifies about new approvals."
         },
         "conductor.defaultPermissionMode": {
