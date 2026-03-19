@@ -14,6 +14,7 @@ import { ClaudeCodeAdapter } from './providers/ClaudeCodeAdapter';
 import { registerProvider, clearProviders } from './providers';
 import { registerStatusBoard } from './views/StatusBoard';
 import { LayoutManager } from './views/LayoutManager';
+import { SetupWizard } from './views/SetupWizard';
 import { providerDataExists } from './providers/ProviderPaths';
 import { ContextKey, StateKey, CommandId } from './constants';
 
@@ -106,25 +107,18 @@ async function activateFull(
     }),
   );
 
-  // ── First-run wizard check ──────────────────────────────────
+  // ── Setup wizard ─────────────────────────────────────────────
+  const wizard = new SetupWizard(context, layoutManager);
+  context.subscriptions.push(wizard);
+  context.subscriptions.push(
+    vscode.commands.registerCommand(CommandId.ShowSetupWizard, () => {
+      wizard.show();
+    }),
+  );
+
   const hasCompletedSetup = context.globalState.get<boolean>(StateKey.HasCompletedSetup, false);
   if (!hasCompletedSetup) {
-    context.subscriptions.push(
-      vscode.commands.registerCommand(CommandId.ShowSetupWizard, () => {
-        // Full wizard implementation in Task 1.15
-        vscode.window.showInformationMessage(
-          'Welcome to Conductor! Use the command palette to configure your layout.',
-          'Configure Layout',
-        ).then(selection => {
-          if (selection === 'Configure Layout') {
-            vscode.commands.executeCommand(CommandId.ChangeLayout);
-          }
-        });
-        context.globalState.update(StateKey.HasCompletedSetup, true);
-      }),
-    );
-    // Trigger wizard on first activation
-    vscode.commands.executeCommand(CommandId.ShowSetupWizard);
+    wizard.show();
   }
 
   // ── Initial session refresh ─────────────────────────────────
