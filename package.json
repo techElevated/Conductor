@@ -40,12 +40,315 @@
       ]
     },
     "views": {
-      "conductor": []
+      "conductor": [
+        {
+          "id": "conductor.sessions",
+          "name": "Sessions",
+          "when": "conductor.layout.sidebarLeft || conductor.layout.split"
+        },
+        {
+          "id": "conductor.approvals",
+          "name": "Pending Approvals",
+          "when": "conductor.layout.sidebarLeft || conductor.layout.split"
+        },
+        {
+          "id": "conductor.promptQueue",
+          "name": "Prompt Queue",
+          "when": "conductor.layout.sidebarLeft || conductor.layout.split"
+        },
+        {
+          "id": "conductor.taskInbox",
+          "name": "Human Tasks",
+          "when": "conductor.layout.sidebarLeft || conductor.layout.split"
+        },
+        {
+          "id": "conductor.dependencies",
+          "name": "Dependencies",
+          "when": "conductor.layout.sidebarLeft || conductor.layout.split"
+        },
+        {
+          "id": "conductor.templates",
+          "name": "Templates",
+          "when": "conductor.layout.sidebarLeft || conductor.layout.split"
+        }
+      ]
     },
-    "commands": [],
+    "commands": [
+      {
+        "command": "conductor.launchSession",
+        "title": "Launch Session",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.killSession",
+        "title": "Kill Session",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.restartSession",
+        "title": "Restart Session",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.jumpToSession",
+        "title": "Jump to Session Terminal",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.approveAction",
+        "title": "Approve Action",
+        "category": "Conductor",
+        "icon": "$(check)"
+      },
+      {
+        "command": "conductor.denyAction",
+        "title": "Deny Action",
+        "category": "Conductor",
+        "icon": "$(close)"
+      },
+      {
+        "command": "conductor.approveAll",
+        "title": "Approve All Pending",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.denyAll",
+        "title": "Deny All Pending",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.addPrompt",
+        "title": "Add Prompt to Queue",
+        "category": "Conductor",
+        "icon": "$(add)"
+      },
+      {
+        "command": "conductor.addPromptFromClipboard",
+        "title": "Add Prompt from Clipboard",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.launchPrompt",
+        "title": "Launch Prompt",
+        "category": "Conductor",
+        "icon": "$(play)"
+      },
+      {
+        "command": "conductor.launchAllPrompts",
+        "title": "Launch All Parallel-Safe Prompts",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.editPrompt",
+        "title": "Edit Prompt",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.deletePrompt",
+        "title": "Delete Prompt",
+        "category": "Conductor",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "conductor.addTask",
+        "title": "Add Human Task",
+        "category": "Conductor",
+        "icon": "$(add)"
+      },
+      {
+        "command": "conductor.completeTask",
+        "title": "Complete Task",
+        "category": "Conductor",
+        "icon": "$(check)"
+      },
+      {
+        "command": "conductor.dismissTask",
+        "title": "Dismiss Task",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.createTemplate",
+        "title": "Create Template",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.launchTemplate",
+        "title": "Launch Template",
+        "category": "Conductor",
+        "icon": "$(play)"
+      },
+      {
+        "command": "conductor.importTemplate",
+        "title": "Import Template",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.exportTemplate",
+        "title": "Export Template",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.openInteraction",
+        "title": "Open Session Interaction Panel",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.sendMessage",
+        "title": "Send Message to Session",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.showSetupWizard",
+        "title": "Show Setup Wizard",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.changeLayout",
+        "title": "Change Layout",
+        "category": "Conductor"
+      },
+      {
+        "command": "conductor.refreshAll",
+        "title": "Refresh All Sessions",
+        "category": "Conductor",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "conductor.openSettings",
+        "title": "Open Settings",
+        "category": "Conductor",
+        "icon": "$(gear)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "conductor.refreshAll",
+          "when": "view == conductor.sessions",
+          "group": "navigation"
+        },
+        {
+          "command": "conductor.addPrompt",
+          "when": "view == conductor.promptQueue",
+          "group": "navigation"
+        },
+        {
+          "command": "conductor.addTask",
+          "when": "view == conductor.taskInbox",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "conductor.jumpToSession",
+          "when": "viewItem =~ /^session-/",
+          "group": "navigation"
+        },
+        {
+          "command": "conductor.killSession",
+          "when": "viewItem == session-running || viewItem == session-waiting",
+          "group": "session@1"
+        },
+        {
+          "command": "conductor.restartSession",
+          "when": "viewItem == session-complete || viewItem == session-error",
+          "group": "session@2"
+        },
+        {
+          "command": "conductor.openInteraction",
+          "when": "viewItem =~ /^session-/",
+          "group": "session@3"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "conductor.jumpToSession",
+          "when": "conductor.isActive"
+        },
+        {
+          "command": "conductor.approveAction",
+          "when": "conductor.hasPendingApprovals"
+        },
+        {
+          "command": "conductor.denyAction",
+          "when": "conductor.hasPendingApprovals"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "conductor.approveAction",
+        "key": "cmd+shift+a",
+        "mac": "cmd+shift+a",
+        "when": "conductor.hasPendingApprovals"
+      },
+      {
+        "command": "conductor.denyAction",
+        "key": "cmd+shift+d",
+        "mac": "cmd+shift+d",
+        "when": "conductor.hasPendingApprovals"
+      }
+    ],
     "configuration": {
       "title": "Conductor",
-      "properties": {}
+      "properties": {
+        "conductor.layout": {
+          "type": "string",
+          "default": "split",
+          "enum": ["sidebar-left", "sidebar-right", "bottom", "split"],
+          "enumDescriptions": [
+            "All panels in the left activity bar sidebar",
+            "All panels in the secondary (right) sidebar",
+            "All panels in the bottom panel",
+            "Compact panels in sidebar, details in editor tabs (default)"
+          ],
+          "description": "Where Conductor's UI panels are rendered in VS Code."
+        },
+        "conductor.interaction.defaultTarget": {
+          "type": "string",
+          "default": "editor-tab",
+          "enum": ["editor-tab", "bottom-panel"],
+          "description": "Where the session interaction panel opens."
+        },
+        "conductor.interaction.clickBehavior": {
+          "type": "string",
+          "default": "open-inline",
+          "enum": ["open-inline", "jump-to-terminal"],
+          "description": "What happens when clicking a session in the status board."
+        },
+        "conductor.notifications.style": {
+          "type": "string",
+          "default": "toast-and-badge",
+          "enum": ["toast", "sound", "toast-and-badge", "none"],
+          "description": "How Conductor notifies about new approvals."
+        },
+        "conductor.defaultPermissionMode": {
+          "type": "string",
+          "default": "default",
+          "enum": ["default", "acceptEdits", "plan", "accept-all", "bypass"],
+          "description": "Default Claude Code permission mode for new sessions."
+        },
+        "conductor.terminal.type": {
+          "type": "string",
+          "default": "vscode",
+          "enum": ["vscode", "tmux"],
+          "description": "Terminal backend for launched sessions."
+        },
+        "conductor.sessionPollIntervalMs": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 500,
+          "maximum": 30000,
+          "description": "How often (ms) to poll for session state changes."
+        },
+        "conductor.outputHistoryLimit": {
+          "type": "number",
+          "default": 50,
+          "minimum": 10,
+          "maximum": 500,
+          "description": "Number of recent output entries shown in the interaction panel."
+        }
+      }
     }
   },
   "scripts": {
