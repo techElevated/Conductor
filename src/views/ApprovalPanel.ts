@@ -216,7 +216,7 @@ export class ApprovalPanelProvider implements vscode.TreeDataProvider<ApprovalTr
 export function registerApprovalPanel(
   context: vscode.ExtensionContext,
   approvalEngine: ApprovalEngine,
-): ApprovalPanelProvider {
+): { provider: ApprovalPanelProvider; treeView: vscode.TreeView<ApprovalTreeElement> } {
   const provider = new ApprovalPanelProvider(approvalEngine);
 
   const treeView = vscode.window.createTreeView(ViewId.Approvals, {
@@ -288,7 +288,7 @@ export function registerApprovalPanel(
   );
 
   context.subscriptions.push(treeView, provider);
-  return provider;
+  return { provider, treeView };
 }
 
 // ── Helpers ─────────────────────────────────────────────────

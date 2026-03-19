@@ -34,8 +34,9 @@ import {
   type ConductorTerminal,
 } from '../platform/TerminalManager';
 import { readJsonFile } from '../storage/FileStore';
-import { getSessionApprovalsDir, getApprovalDecisionPath } from '../storage/paths';
+import { getSessionApprovalsDir, getApprovalDecisionPath, getApprovalsDir } from '../storage/paths';
 import { listJsonFiles } from '../storage/FileStore';
+import { installHook, isHookInstalled } from '../hooks/hookInstaller';
 
 // ── Adapter implementation ──────────────────────────────────────
 
@@ -43,6 +44,9 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   readonly providerId = 'claude-code';
   readonly displayName = 'Claude Code';
   readonly iconPath = 'media/claude-code-icon.svg';
+
+  /** Extension path for locating bundled assets */
+  extensionPath = '';
 
   /** Map sessionId → ConductorTerminal for sessions launched through Conductor */
   private terminals = new Map<string, ConductorTerminal>();
@@ -102,13 +106,8 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
   // ── Launch ────────────────────────────────────────────────
 
   async launchSession(config: LaunchConfig): Promise<ManagedSession> {
+    const sessionId = crypto.randomUUID();
     const args: string[] = [];
-
-    // Build the claude CLI command
-    if (config.prompt) {
-      args.push('--print'); // Non-interactive mode with prompt
-      // We'll send the prompt via terminal input instead
-    }
 
     if (config.permissionMode && config.permissionMode !== 'default') {
       args.push('--permission-mode', config.permissionMode);
@@ -118,36 +117,55 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       args.push('--worktree');
     }
 
+    // Set up environment with Conductor session ID for the hook
+    const env: Record<string, string> = {
+      ...config.env,
+      CONDUCTOR_SESSION_ID: sessionId,
+      CONDUCTOR_SESSION_NAME: config.sessionName,
+    };
+
     const terminal = await createTerminal(
       config.sessionName,
       config.terminalType,
       config.workspacePath,
-      config.env,
+      env,
     );
 
     // Send the claude command with the prompt
-    const escapedPrompt = config.prompt.replace(/"/g, '\\"');
-    const cmd = `claude --prompt "${escapedPrompt}"${args.length ? ' ' + args.join(' ') : ''}`;
+    const escapedPrompt = config.prompt.replace(/'/g, "'\\''");
+    const cmd = `claude --prompt '${escapedPrompt}'${args.length ? ' ' + args.join(' ') : ''}`;
     terminal.sendText(cmd);
     terminal.show();
 
-    const sessionId = crypto.randomUUID();
     this.terminals.set(sessionId, terminal);
 
-    return {
+    const managed: ManagedSession = {
       id: sessionId,
       pid: 0, // PID will be resolved on next poll
       terminal: terminal.vscodeTerminal,
       workspacePath: config.workspacePath,
     };
+
+    // Install the approval hook
+    try {
+      await this.installApprovalHook(managed);
+    } catch {
+      // Hook installation failure is non-fatal — session still runs
+    }
+
+    return managed;
   }
 
   // ── Approval hooks ────────────────────────────────────────
 
-  async installApprovalHook(_session: ManagedSession): Promise<void> {
-    // Full implementation in Sprint 2 (Approvals + Hooks)
-    // Stub: hook installation will write a PreToolUse hook script
-    // and configure it for the session
+  async installApprovalHook(session: ManagedSession): Promise<void> {
+    const sessionName = this.terminals.get(session.id)?.id ?? session.id;
+    await installHook(session.id, sessionName, this.extensionPath);
+  }
+
+  /** Check if the approval hook is currently installed. */
+  async isApprovalHookInstalled(): Promise<boolean> {
+    return isHookInstalled();
   }
 
   // ── State reading ─────────────────────────────────────────
@@ -205,6 +223,9 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       watcher.dispose();
       this.outputWatchers.delete(sessionId);
     }
+
+    // Clean up approval files for this session
+    await this.cleanupSessionApprovals(sessionId);
   }
 
   getTerminal(sessionId: string): vscode.Terminal | null {
@@ -335,7 +356,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     decision: 'allow' | 'deny',
   ): Promise<void> {
     // Find the approval across all session directories
-    const approvalsDir = path.dirname(getSessionApprovalsDir(''));
+    const approvalsDir = getApprovalsDir();
     try {
       const sessionDirs = await fs.promises.readdir(approvalsDir, { withFileTypes: true });
       for (const dir of sessionDirs) {
@@ -355,6 +376,19 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       }
     } catch {
       // Approvals dir doesn't exist yet
+    }
+  }
+
+  private async cleanupSessionApprovals(sessionId: string): Promise<void> {
+    const sessionDir = getSessionApprovalsDir(sessionId);
+    try {
+      const files = await fs.promises.readdir(sessionDir);
+      await Promise.all(
+        files.map((f) => fs.promises.unlink(path.join(sessionDir, f)).catch(() => { /* ignore */ })),
+      );
+      await fs.promises.rmdir(sessionDir).catch(() => { /* ignore */ });
+    } catch {
+      // Directory doesn't exist or already cleaned up
     }
   }
 }

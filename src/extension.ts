@@ -13,6 +13,9 @@ import { registerNavigationCommands } from './core/NavigationManager';
 import { ClaudeCodeAdapter } from './providers/ClaudeCodeAdapter';
 import { registerProvider, clearProviders } from './providers';
 import { registerStatusBoard } from './views/StatusBoard';
+import { registerApprovalPanel } from './views/ApprovalPanel';
+import { ApprovalNotifier } from './views/ApprovalNotifier';
+import { ApprovalEngine } from './core/ApprovalEngine';
 import { LayoutManager } from './views/LayoutManager';
 import { SetupWizard } from './views/SetupWizard';
 import { providerDataExists } from './providers/ProviderPaths';
@@ -20,6 +23,7 @@ import { ContextKey, StateKey, CommandId } from './constants';
 
 let sessionManager: SessionManager | undefined;
 let layoutManager: LayoutManager | undefined;
+let approvalEngine: ApprovalEngine | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const outputChannel = vscode.window.createOutputChannel('Conductor');
@@ -59,6 +63,7 @@ async function activateFull(
 
   // ── Register providers ──────────────────────────────────────
   const claudeAdapter = new ClaudeCodeAdapter();
+  claudeAdapter.extensionPath = context.extensionPath;
   registerProvider(claudeAdapter);
 
   // ── Session manager ─────────────────────────────────────────
@@ -66,8 +71,27 @@ async function activateFull(
   context.subscriptions.push(sessionManager);
   await sessionManager.initialise();
 
+  // ── Approval engine ─────────────────────────────────────────
+  approvalEngine = new ApprovalEngine();
+  context.subscriptions.push(approvalEngine);
+  await approvalEngine.initialise();
+
+  // Auto-dismiss approvals when sessions complete or error
+  context.subscriptions.push(
+    sessionManager.onSessionEvent((event) => {
+      if (event.type === 'completed' || event.type === 'error' || event.type === 'killed') {
+        approvalEngine?.dismissSessionApprovals(event.sessionId);
+      }
+    }),
+  );
+
   // ── Views ───────────────────────────────────────────────────
   registerStatusBoard(context, sessionManager);
+  const { treeView: approvalTreeView } = registerApprovalPanel(context, approvalEngine);
+
+  // ── Approval notifications (badge + toast) ──────────────────
+  const approvalNotifier = new ApprovalNotifier(approvalEngine, approvalTreeView);
+  context.subscriptions.push(approvalNotifier);
 
   // ── Commands ────────────────────────────────────────────────
   registerNavigationCommands(context, sessionManager);
@@ -155,4 +179,5 @@ export function deactivate(): void {
   clearProviders();
   sessionManager = undefined;
   layoutManager = undefined;
+  approvalEngine = undefined;
 }
