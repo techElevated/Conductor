@@ -58,6 +58,7 @@ export const CommandId = {
   LaunchTemplate: 'conductor.launchTemplate',
   ImportTemplate: 'conductor.importTemplate',
   ExportTemplate: 'conductor.exportTemplate',
+  DeleteTemplate: 'conductor.deleteTemplate',
 
   // Interaction
   OpenInteraction: 'conductor.openInteraction',

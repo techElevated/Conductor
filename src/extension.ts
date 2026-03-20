@@ -16,14 +16,27 @@ import { registerStatusBoard } from './views/StatusBoard';
 import { registerApprovalPanel } from './views/ApprovalPanel';
 import { ApprovalNotifier } from './views/ApprovalNotifier';
 import { ApprovalEngine } from './core/ApprovalEngine';
+import { QueueManager } from './core/QueueManager';
+import { DependencyEngine } from './core/DependencyEngine';
+import { TaskFeedback } from './core/TaskFeedback';
+import { TaskDetector } from './core/TaskDetector';
+import { TemplateManager } from './core/TemplateManager';
+import { registerPromptQueue } from './views/PromptQueue';
+import { registerDependencyTreeView } from './views/DependencyTreeView';
+import { TaskInboxProvider } from './views/TaskInbox';
+import { TemplateLibraryProvider } from './views/TemplateLibrary';
 import { LayoutManager } from './views/LayoutManager';
 import { SetupWizard } from './views/SetupWizard';
 import { providerDataExists } from './providers/ProviderPaths';
-import { ContextKey, StateKey, CommandId } from './constants';
+import { ContextKey, StateKey, CommandId, ViewId } from './constants';
 
 let sessionManager: SessionManager | undefined;
 let layoutManager: LayoutManager | undefined;
 let approvalEngine: ApprovalEngine | undefined;
+let queueManager: QueueManager | undefined;
+let dependencyEngine: DependencyEngine | undefined;
+let taskDetector: TaskDetector | undefined;
+let templateManager: TemplateManager | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const outputChannel = vscode.window.createOutputChannel('Conductor');
@@ -57,6 +70,8 @@ async function activateFull(
 ): Promise<void> {
   vscode.commands.executeCommand('setContext', ContextKey.IsActive, true);
 
+  const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+
   // ── Layout manager ──────────────────────────────────────────
   layoutManager = new LayoutManager();
   context.subscriptions.push(layoutManager);
@@ -85,6 +100,28 @@ async function activateFull(
     }),
   );
 
+  // ── Queue manager + dependency engine (Sprint 3) ─────────────
+  queueManager = new QueueManager(wsPath ?? '', sessionManager);
+  context.subscriptions.push(queueManager);
+  await queueManager.initialise();
+
+  dependencyEngine = new DependencyEngine(sessionManager, queueManager);
+  context.subscriptions.push(dependencyEngine);
+  await dependencyEngine.initialise();
+
+  // ── Task feedback + detector (Sprint 4) ─────────────────────
+  const taskFeedback = new TaskFeedback();
+  await taskFeedback.initialise();
+
+  taskDetector = new TaskDetector(wsPath ?? '', sessionManager, taskFeedback);
+  context.subscriptions.push(taskDetector);
+  await taskDetector.initialise();
+
+  // ── Template manager (Sprint 4) ──────────────────────────────
+  templateManager = new TemplateManager(wsPath ?? '', queueManager, dependencyEngine);
+  context.subscriptions.push(templateManager);
+  await templateManager.initialise();
+
   // ── Views ───────────────────────────────────────────────────
   registerStatusBoard(context, sessionManager);
   const { treeView: approvalTreeView } = registerApprovalPanel(context, approvalEngine);
@@ -93,14 +130,39 @@ async function activateFull(
   const approvalNotifier = new ApprovalNotifier(approvalEngine, approvalTreeView);
   context.subscriptions.push(approvalNotifier);
 
+  // ── Sprint 3 views ───────────────────────────────────────────
+  registerPromptQueue(context, queueManager);
+  registerDependencyTreeView(context, sessionManager, queueManager, dependencyEngine);
+
+  // ── Sprint 4 views ───────────────────────────────────────────
+  const taskInboxProvider = new TaskInboxProvider(taskDetector, taskFeedback);
+  context.subscriptions.push(taskInboxProvider);
+  const taskInboxView = vscode.window.createTreeView(ViewId.TaskInbox, {
+    treeDataProvider: taskInboxProvider,
+    showCollapseAll: true,
+    manageCheckboxStateManually: true,
+  });
+  context.subscriptions.push(taskInboxView);
+  taskInboxProvider.registerCommands(context);
+  taskInboxProvider.registerCheckboxHandler(taskInboxView);
+
+  const templateLibraryProvider = new TemplateLibraryProvider(templateManager);
+  context.subscriptions.push(templateLibraryProvider);
+  const templateLibraryView = vscode.window.createTreeView(ViewId.Templates, {
+    treeDataProvider: templateLibraryProvider,
+    showCollapseAll: true,
+  });
+  context.subscriptions.push(templateLibraryView);
+  templateLibraryProvider.registerCommands(context);
+
   // ── Commands ────────────────────────────────────────────────
   registerNavigationCommands(context, sessionManager);
 
   context.subscriptions.push(
     vscode.commands.registerCommand(CommandId.RefreshAll, () => {
-      const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-      if (wsPath) {
-        sessionManager?.refreshSessions(wsPath);
+      const currentWsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (currentWsPath) {
+        sessionManager?.refreshSessions(currentWsPath);
       }
     }),
   );
@@ -146,7 +208,6 @@ async function activateFull(
   }
 
   // ── Initial session refresh ─────────────────────────────────
-  const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   if (wsPath) {
     sessionManager.refreshSessions(wsPath).catch(() => { /* non-fatal */ });
   }
@@ -180,4 +241,8 @@ export function deactivate(): void {
   sessionManager = undefined;
   layoutManager = undefined;
   approvalEngine = undefined;
+  queueManager = undefined;
+  dependencyEngine = undefined;
+  taskDetector = undefined;
+  templateManager = undefined;
 }

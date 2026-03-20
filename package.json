@@ -188,6 +188,12 @@
         "category": "Conductor"
       },
       {
+        "command": "conductor.deleteTemplate",
+        "title": "Delete Template",
+        "category": "Conductor",
+        "icon": "$(trash)"
+      },
+      {
         "command": "conductor.openInteraction",
         "title": "Open Session Interaction Panel",
         "category": "Conductor"
@@ -246,6 +252,16 @@
           "command": "conductor.addTask",
           "when": "view == conductor.taskInbox",
           "group": "navigation"
+        },
+        {
+          "command": "conductor.createTemplate",
+          "when": "view == conductor.templates",
+          "group": "navigation"
+        },
+        {
+          "command": "conductor.importTemplate",
+          "when": "view == conductor.templates",
+          "group": "navigation"
         }
       ],
       "view/item/context": [
@@ -278,6 +294,31 @@
           "command": "conductor.denyAction",
           "when": "viewItem == approval-pending",
           "group": "inline@2"
+        },
+        {
+          "command": "conductor.completeTask",
+          "when": "viewItem == task-pending",
+          "group": "inline@1"
+        },
+        {
+          "command": "conductor.dismissTask",
+          "when": "viewItem == task-pending",
+          "group": "inline@2"
+        },
+        {
+          "command": "conductor.launchTemplate",
+          "when": "viewItem == template",
+          "group": "inline@1"
+        },
+        {
+          "command": "conductor.exportTemplate",
+          "when": "viewItem == template",
+          "group": "inline@2"
+        },
+        {
+          "command": "conductor.deleteTemplate",
+          "when": "viewItem == template",
+          "group": "inline@3"
         }
       ],
       "commandPalette": [
