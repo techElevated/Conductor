@@ -72,7 +72,7 @@ export function entriesToOutputEvents(entries: JsonlEntry[]): SessionOutputEvent
  * Convert a single JSONL entry to a SessionOutputEvent, or null
  * if the entry type isn't relevant.
  */
-function entryToOutputEvent(entry: JsonlEntry): SessionOutputEvent | null {
+export function entryToOutputEvent(entry: JsonlEntry): SessionOutputEvent | null {
   const timestamp = (entry.timestamp as string) ?? new Date().toISOString();
 
   // Assistant message

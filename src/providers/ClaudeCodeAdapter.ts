@@ -27,6 +27,8 @@ import {
   parseJsonlFile,
   entriesToOutputEvents,
   inferStatusFromEntries,
+  watchNewEntries,
+  entryToOutputEvent,
 } from '../utils/jsonlParser';
 import { findAgentProcesses, isProcessAlive } from '../utils/processUtils';
 import {
@@ -250,18 +252,33 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     sessionId: string,
     callback: (output: SessionOutputEvent) => void,
   ): vscode.Disposable {
-    // Watch the session's JSONL log for new entries
-    // Full implementation will use fs.watch on the JSONL file
-    // For now, return a disposable stub
+    // Clean up any existing watcher for this session
+    this.outputWatchers.get(sessionId)?.dispose();
+
+    // Try to find the JSONL log file for this session
+    const jsonlPath = this.resolveJsonlPath(sessionId);
+    if (!jsonlPath) {
+      // No log file found — return a no-op disposable
+      const disposable = new vscode.Disposable(() => {
+        this.outputWatchers.delete(sessionId);
+      });
+      this.outputWatchers.set(sessionId, disposable);
+      return disposable;
+    }
+
+    // Watch for new JSONL entries and convert to SessionOutputEvents
+    const watchDisposable = watchNewEntries(jsonlPath, (entry) => {
+      const event = entryToOutputEvent(entry);
+      if (event) {
+        callback(event);
+      }
+    });
+
     const disposable = new vscode.Disposable(() => {
+      watchDisposable.dispose();
       this.outputWatchers.delete(sessionId);
     });
     this.outputWatchers.set(sessionId, disposable);
-
-    // Suppress unused parameter warnings — callback will be used
-    // when the fs.watch implementation is wired in Sprint 5
-    void callback;
-
     return disposable;
   }
 
@@ -292,6 +309,32 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
     }
 
     return [];
+  }
+
+  // ── JSONL path resolution ────────────────────────────────
+
+  /**
+   * Resolve the JSONL log file path for a session.
+   * Searches across all project hash directories under ~/.claude/projects/.
+   */
+  private resolveJsonlPath(sessionId: string): string | null {
+    const projectsDir = getProviderProjectsDir('claude-code');
+    try {
+      const dirs = fs.readdirSync(projectsDir, { withFileTypes: true });
+      for (const dir of dirs) {
+        if (!dir.isDirectory()) { continue; }
+        const candidate = path.join(projectsDir, dir.name, `${sessionId}.jsonl`);
+        try {
+          fs.accessSync(candidate, fs.constants.R_OK);
+          return candidate;
+        } catch {
+          continue;
+        }
+      }
+    } catch {
+      // Projects dir doesn't exist
+    }
+    return null;
   }
 
   // ── Private helpers ───────────────────────────────────────
