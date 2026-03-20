@@ -27,6 +27,8 @@ import { TaskInboxProvider } from './views/TaskInbox';
 import { TemplateLibraryProvider } from './views/TemplateLibrary';
 import { LayoutManager } from './views/LayoutManager';
 import { SetupWizard } from './views/SetupWizard';
+import { InteractionPanel } from './views/InteractionPanel';
+import { InteractionManager } from './core/InteractionManager';
 import { providerDataExists } from './providers/ProviderPaths';
 import { ContextKey, StateKey, CommandId, ViewId } from './constants';
 
@@ -37,6 +39,8 @@ let queueManager: QueueManager | undefined;
 let dependencyEngine: DependencyEngine | undefined;
 let taskDetector: TaskDetector | undefined;
 let templateManager: TemplateManager | undefined;
+let interactionManager: InteractionManager | undefined;
+let interactionPanel: InteractionPanel | undefined;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   const outputChannel = vscode.window.createOutputChannel('Conductor');
@@ -121,6 +125,19 @@ async function activateFull(
   templateManager = new TemplateManager(wsPath ?? '', queueManager, dependencyEngine);
   context.subscriptions.push(templateManager);
   await templateManager.initialise();
+
+  // ── Interaction manager + panel (Sprint 5) ─────────────────
+  interactionManager = new InteractionManager(sessionManager);
+  context.subscriptions.push(interactionManager);
+
+  interactionPanel = new InteractionPanel(
+    context,
+    interactionManager,
+    sessionManager,
+    approvalEngine,
+  );
+  context.subscriptions.push(interactionPanel);
+  interactionPanel.registerCommands(context);
 
   // ── Views ───────────────────────────────────────────────────
   registerStatusBoard(context, sessionManager);
@@ -245,4 +262,6 @@ export function deactivate(): void {
   dependencyEngine = undefined;
   taskDetector = undefined;
   templateManager = undefined;
+  interactionManager = undefined;
+  interactionPanel = undefined;
 }
