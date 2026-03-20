@@ -356,7 +356,12 @@
         "conductor.layout": {
           "type": "string",
           "default": "split",
-          "enum": ["sidebar-left", "sidebar-right", "bottom", "split"],
+          "enum": [
+            "sidebar-left",
+            "sidebar-right",
+            "bottom",
+            "split"
+          ],
           "enumDescriptions": [
             "All panels in the left activity bar sidebar",
             "All panels in the secondary (right) sidebar",
@@ -368,19 +373,32 @@
         "conductor.interaction.defaultTarget": {
           "type": "string",
           "default": "editor-tab",
-          "enum": ["editor-tab", "bottom-panel"],
+          "enum": [
+            "editor-tab",
+            "bottom-panel"
+          ],
           "description": "Where the session interaction panel opens."
         },
         "conductor.interaction.clickBehavior": {
           "type": "string",
           "default": "open-inline",
-          "enum": ["open-inline", "jump-to-terminal"],
+          "enum": [
+            "open-inline",
+            "jump-to-terminal"
+          ],
           "description": "What happens when clicking a session in the status board."
         },
         "conductor.notifications.style": {
           "type": "string",
           "default": "toast-and-badge",
-          "enum": ["badge-only", "toast", "sound", "toast-and-badge", "toast-badge-sound", "none"],
+          "enum": [
+            "badge-only",
+            "toast",
+            "sound",
+            "toast-and-badge",
+            "toast-badge-sound",
+            "none"
+          ],
           "enumDescriptions": [
             "Badge count only — no popups",
             "VS Code toast notification only",
@@ -394,13 +412,22 @@
         "conductor.defaultPermissionMode": {
           "type": "string",
           "default": "default",
-          "enum": ["default", "acceptEdits", "plan", "accept-all", "bypass"],
+          "enum": [
+            "default",
+            "acceptEdits",
+            "plan",
+            "accept-all",
+            "bypass"
+          ],
           "description": "Default Claude Code permission mode for new sessions."
         },
         "conductor.terminal.type": {
           "type": "string",
           "default": "vscode",
-          "enum": ["vscode", "tmux"],
+          "enum": [
+            "vscode",
+            "tmux"
+          ],
           "description": "Terminal backend for launched sessions."
         },
         "conductor.sessionPollIntervalMs": {
@@ -451,6 +478,7 @@
     "prettier": "^3.2.4",
     "sinon": "^17.0.1",
     "ts-loader": "^9.5.1",
+    "ts-node": "^10.9.2",
     "typescript": "^5.3.3",
     "webpack": "^5.90.0",
     "webpack-cli": "^5.1.4"
