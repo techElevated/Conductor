@@ -142,7 +142,7 @@ async function activateFull(
   const approvalNotifier = new ApprovalNotifier(approvalEngine, approvalTreeView);
   context.subscriptions.push(approvalNotifier);
 
-  registerPromptQueue(context, queueManager);
+  registerPromptQueue(context, queueManager, dependencyEngine);
   registerDependencyTreeView(context, sessionManager, queueManager, dependencyEngine);
 
   const taskInboxProvider = new TaskInboxProvider(taskDetector, taskFeedback);

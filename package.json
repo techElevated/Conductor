@@ -208,6 +208,11 @@
         "icon": "$(trash)"
       },
       {
+        "command": "conductor.setDependency",
+        "title": "Set Dependency",
+        "category": "Conductor"
+      },
+      {
         "command": "conductor.openInteraction",
         "title": "Open Session Interaction Panel",
         "category": "Conductor"
@@ -280,6 +285,36 @@
       ],
       "view/item/context": [
         {
+          "command": "conductor.launchPrompt",
+          "when": "viewItem == prompt-queued",
+          "group": "inline@1"
+        },
+        {
+          "command": "conductor.deletePrompt",
+          "when": "viewItem == prompt-queued",
+          "group": "inline@2"
+        },
+        {
+          "command": "conductor.launchPrompt",
+          "when": "viewItem == prompt-queued",
+          "group": "context@1"
+        },
+        {
+          "command": "conductor.editPrompt",
+          "when": "viewItem == prompt-queued",
+          "group": "context@2"
+        },
+        {
+          "command": "conductor.setDependency",
+          "when": "viewItem == prompt-queued",
+          "group": "context@3"
+        },
+        {
+          "command": "conductor.deletePrompt",
+          "when": "viewItem == prompt-queued",
+          "group": "context@4"
+        },
+        {
           "command": "conductor.jumpToSession",
           "when": "viewItem =~ /^session-/",
           "group": "navigation"
@@ -333,6 +368,12 @@
           "command": "conductor.deleteTemplate",
           "when": "viewItem == template",
           "group": "inline@3"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "conductor.addTask",
+          "group": "conductor@1"
         }
       ],
       "commandPalette": [

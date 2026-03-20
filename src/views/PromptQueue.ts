@@ -11,6 +11,7 @@
 import * as vscode from 'vscode';
 import type { QueuedPrompt, PromptStatus, PromptComplexity } from '../types';
 import type { QueueManager } from '../core/QueueManager';
+import type { DependencyEngine } from '../core/DependencyEngine';
 import { CommandId, ViewId } from '../constants';
 
 // ── Display config ──────────────────────────────────────────────
@@ -209,6 +210,7 @@ export class PromptQueueProvider implements vscode.TreeDataProvider<PromptQueueE
 export function registerPromptQueue(
   context: vscode.ExtensionContext,
   queueManager: QueueManager,
+  dependencyEngine?: DependencyEngine,
 ): { provider: PromptQueueProvider; treeView: vscode.TreeView<PromptQueueElement> } {
   const provider = new PromptQueueProvider(queueManager);
 
@@ -378,6 +380,66 @@ export function registerPromptQueue(
 
         if (confirm === 'Delete') {
           await queueManager.removePrompt(id);
+        }
+      },
+    ),
+  );
+
+  // ── Set Dependency ────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      CommandId.SetDependency,
+      async (idOrItem?: string | PromptTreeItem) => {
+        const id = resolvePromptId(idOrItem);
+        if (!id) { return; }
+
+        const prompt = queueManager.getPrompt(id);
+        if (!prompt) { return; }
+
+        // Build list of candidate upstream prompts (all others in queue)
+        const candidates = queueManager.getQueue().filter(p => p.id !== id);
+
+        if (candidates.length === 0) {
+          vscode.window.showInformationMessage(
+            'Conductor: No other prompts available to set as dependencies.',
+          );
+          return;
+        }
+
+        const picks = await vscode.window.showQuickPick(
+          candidates.map(p => ({
+            label: p.name,
+            description: `${p.complexity} · ${p.status}`,
+            picked: prompt.dependsOn.includes(p.id),
+            id: p.id,
+          })),
+          {
+            placeHolder: `Select upstream dependencies for "${prompt.name}"`,
+            canPickMany: true,
+          },
+        );
+
+        if (picks === undefined) { return; } // cancelled
+
+        const selectedIds = picks.map(p => p.id);
+
+        try {
+          if (dependencyEngine) {
+            // Clear old deps and set the new ones through DependencyEngine (cycle-safe)
+            await queueManager.updatePrompt(id, { dependsOn: [] });
+            if (selectedIds.length > 0) {
+              await dependencyEngine.addDependency(id, selectedIds);
+            }
+          } else {
+            await queueManager.updatePrompt(id, { dependsOn: selectedIds });
+          }
+          vscode.window.showInformationMessage(
+            selectedIds.length > 0
+              ? `Conductor: Set ${selectedIds.length} dependency(s) for "${prompt.name}"`
+              : `Conductor: Cleared dependencies for "${prompt.name}"`,
+          );
+        } catch (err) {
+          vscode.window.showErrorMessage(`Conductor: ${(err as Error).message}`);
         }
       },
     ),

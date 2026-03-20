@@ -59,7 +59,9 @@ export class TemplateManager implements vscode.Disposable {
 
   async initialise(): Promise<void> {
     await ensureDir(getUserTemplatesDir());
-    await ensureDir(getProjectTemplatesDir(this.workspacePath));
+    if (this.workspacePath) {
+      await ensureDir(getProjectTemplatesDir(this.workspacePath));
+    }
     await this.loadUserTemplates();
     await this.loadProjectTemplates();
   }
@@ -198,6 +200,19 @@ export class TemplateManager implements vscode.Disposable {
     const template = this.getTemplate(templateId);
     if (!template) {throw new Error(`Template "${templateId}" not found`);}
 
+    console.log(
+      `[Conductor] launchTemplate: "${template.name}" (id=${templateId})`,
+      `sessions=${template.sessions.length}`,
+      JSON.stringify(template.sessions.map(s => ({ id: s.templateSessionId, name: s.name, deps: s.dependsOn }))),
+    );
+
+    if (template.sessions.length === 0) {
+      throw new Error(
+        `Template "${template.name}" has no sessions defined. ` +
+        `Add sessions to the template before launching.`,
+      );
+    }
+
     // Validate required variables
     for (const v of template.variables) {
       if (v.required && !variables[v.name] && !v.default) {
@@ -253,12 +268,16 @@ export class TemplateManager implements vscode.Disposable {
     // Auto-launch prompts with no dependencies
     const launchedSessions: ConductorSession[] = [];
     for (const promptId of queuedPromptIds) {
-      if (this.dependencyEngine.allDependenciesMet(promptId)) {
+      const depsMetForPrompt = this.dependencyEngine.allDependenciesMet(promptId);
+      console.log(`[Conductor] launchTemplate: prompt ${promptId} — allDependenciesMet=${depsMetForPrompt}`);
+      if (depsMetForPrompt) {
         try {
           const session = await this.queueManager.launchPrompt(promptId);
           launchedSessions.push(session);
-        } catch {
-          // Non-fatal — prompt stays in queue
+          console.log(`[Conductor] launchTemplate: launched session ${session.id} for prompt ${promptId}`);
+        } catch (err) {
+          console.error(`[Conductor] launchTemplate: failed to launch prompt ${promptId}:`, err);
+          // Non-fatal — prompt stays in queue for manual launch
         }
       }
     }
@@ -317,6 +336,7 @@ export class TemplateManager implements vscode.Disposable {
   }
 
   private async loadProjectTemplates(): Promise<void> {
+    if (!this.workspacePath) { return; }
     const dir = getProjectTemplatesDir(this.workspacePath);
     await this.loadTemplatesFromDir(dir, 'project', this.projectTemplates);
   }

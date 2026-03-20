@@ -60,48 +60,85 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
 
   async discoverSessions(workspacePath: string): Promise<DiscoveredSession[]> {
     const projectsDir = getProviderProjectsDir('claude-code');
-    const hash = this.hashPath(workspacePath);
-    const projectDir = path.join(projectsDir, hash);
+
+    console.log(`[Conductor] discoverSessions: scanning "${projectsDir}" for workspace "${workspacePath}"`);
 
     const sessions: DiscoveredSession[] = [];
 
-    // Check if the project directory exists
+    // List all project directories — Claude Code may use various naming schemes
+    // (path-encoded, hashed, or other) so we scan everything rather than predicting the name.
+    let allDirs: fs.Dirent[];
     try {
-      await fs.promises.access(projectDir, fs.constants.R_OK);
+      allDirs = await fs.promises.readdir(projectsDir, { withFileTypes: true });
     } catch {
+      console.log(`[Conductor] discoverSessions: projects dir not found: "${projectsDir}"`);
       return sessions;
     }
 
-    // Scan for JSONL files (each represents a session conversation)
-    const entries = await fs.promises.readdir(projectDir, { withFileTypes: true });
-    const jsonlFiles = entries.filter(
-      e => e.isFile() && e.name.endsWith('.jsonl'),
+    const projectDirs = allDirs.filter(e => e.isDirectory());
+    console.log(
+      `[Conductor] discoverSessions: found ${projectDirs.length} project dir(s): [${projectDirs.map(d => d.name).join(', ')}]`,
+    );
+
+    // Try known workspace-path → directory-name encoding schemes so we can
+    // prefer sessions that belong to the current workspace.
+    //   1. SHA-256 16-char hex (Conductor's own scheme)
+    //   2. Absolute path with each '/' replaced by '-' (Claude Code's scheme)
+    const sha256Hash = this.hashPath(workspacePath);
+    const pathEncoded = workspacePath.replace(/\//g, '-');
+
+    const matchingDirs = projectDirs.filter(
+      d => d.name === sha256Hash || d.name === pathEncoded,
+    );
+
+    // If we found a recognised encoding, scope to those dirs only.
+    // Otherwise, fall back to all dirs so we still surface running sessions
+    // even when Claude Code uses an encoding scheme we haven't seen yet.
+    const dirsToScan = matchingDirs.length > 0 ? matchingDirs : projectDirs;
+
+    console.log(
+      matchingDirs.length > 0
+        ? `[Conductor] discoverSessions: matched ${matchingDirs.length} dir(s) for workspace (${sha256Hash} / ${pathEncoded})`
+        : `[Conductor] discoverSessions: no exact match — falling back to all ${projectDirs.length} dir(s)`,
     );
 
     // Also discover via running processes
     const runningProcesses = await findAgentProcesses('claude');
 
-    for (const file of jsonlFiles) {
-      const filePath = path.join(projectDir, file.name);
-      const sessionId = path.basename(file.name, '.jsonl');
+    for (const dir of dirsToScan) {
+      const dirPath = path.join(projectsDir, dir.name);
 
-      const jsonlEntries = await parseJsonlFile(filePath);
-      const status = inferStatusFromEntries(jsonlEntries);
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+      } catch {
+        continue;
+      }
 
-      // Check if a matching process is running
-      const pid = this.findMatchingProcess(runningProcesses, workspacePath);
+      const jsonlFiles = entries.filter(e => e.isFile() && e.name.endsWith('.jsonl'));
+      console.log(`[Conductor] discoverSessions: dir "${dir.name}" → ${jsonlFiles.length} jsonl file(s)`);
 
-      sessions.push({
-        id: sessionId,
-        name: this.deriveSessionName(jsonlEntries, sessionId),
-        workspacePath,
-        pid,
-        status: pid !== null && isProcessAlive(pid) ? status : 'complete',
-        startedAt: this.getFileCreationTime(filePath),
-        managed: false,
-      });
+      for (const file of jsonlFiles) {
+        const filePath = path.join(dirPath, file.name);
+        const sessionId = path.basename(file.name, '.jsonl');
+
+        const jsonlEntries = await parseJsonlFile(filePath);
+        const status = inferStatusFromEntries(jsonlEntries);
+        const pid = this.findMatchingProcess(runningProcesses, workspacePath);
+
+        sessions.push({
+          id: sessionId,
+          name: this.deriveSessionName(jsonlEntries, sessionId),
+          workspacePath,
+          pid,
+          status: pid !== null && isProcessAlive(pid) ? status : 'complete',
+          startedAt: this.getFileCreationTime(filePath),
+          managed: false,
+        });
+      }
     }
 
+    console.log(`[Conductor] discoverSessions: discovered ${sessions.length} total session(s)`);
     return sessions;
   }
 

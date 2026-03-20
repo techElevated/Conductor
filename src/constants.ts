@@ -47,6 +47,7 @@ export const CommandId = {
   LaunchAllPrompts: 'conductor.launchAllPrompts',
   EditPrompt: 'conductor.editPrompt',
   DeletePrompt: 'conductor.deletePrompt',
+  SetDependency: 'conductor.setDependency',
 
   // Human tasks
   AddTask: 'conductor.addTask',

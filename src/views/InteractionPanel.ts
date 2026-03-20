@@ -1313,7 +1313,19 @@ export class InteractionPanel implements vscode.Disposable {
     context.subscriptions.push(
       vscode.commands.registerCommand(
         CommandId.OpenInteraction,
-        (sessionId?: string) => {
+        (idOrItem?: unknown) => {
+          // Accept either a raw session ID string (from click command.arguments)
+          // or a SessionTreeItem object passed from the context menu.
+          let sessionId: string | undefined;
+          if (typeof idOrItem === 'string') {
+            sessionId = idOrItem;
+          } else if (
+            idOrItem !== null &&
+            idOrItem !== undefined &&
+            typeof (idOrItem as { session?: { id?: string } }).session?.id === 'string'
+          ) {
+            sessionId = (idOrItem as { session: { id: string } }).session.id;
+          }
           if (sessionId) {
             this.openSession(sessionId);
           }

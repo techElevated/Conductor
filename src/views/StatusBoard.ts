@@ -48,10 +48,10 @@ export class SessionTreeItem extends vscode.TreeItem {
       display.color,
     );
 
-    // Click → jump to terminal
+    // Click → open interaction panel
     this.command = {
-      command: CommandId.JumpToSession,
-      title: 'Jump to Session',
+      command: CommandId.OpenInteraction,
+      title: 'Open Session Interaction',
       arguments: [session.id],
     };
 
