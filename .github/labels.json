@@ -1,0 +1,10 @@
+[
+  { "name": "bug", "color": "d73a4a", "description": "Something isn't working" },
+  { "name": "feature", "color": "a2eeef", "description": "New feature or enhancement" },
+  { "name": "good-first-issue", "color": "7057ff", "description": "Good for newcomers" },
+  { "name": "help-wanted", "color": "008672", "description": "Extra attention is needed" },
+  { "name": "provider-adapter", "color": "fbca04", "description": "Related to adding or improving a provider adapter" },
+  { "name": "documentation", "color": "0075ca", "description": "Improvements or additions to documentation" },
+  { "name": "performance", "color": "e4e669", "description": "Performance-related improvements" },
+  { "name": "security", "color": "b60205", "description": "Security-related issue" }
+]
