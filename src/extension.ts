@@ -76,24 +76,26 @@ async function activateFull(
 
   const wsPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
 
-  // ── Layout manager ──────────────────────────────────────────
+  // ── 1. Layout manager ──────────────────────────────────────────
+  // Sets layout context keys (async via setContext), which will make
+  // the sidebar views visible once the event loop ticks.
   layoutManager = new LayoutManager();
   context.subscriptions.push(layoutManager);
 
-  // ── Register providers ──────────────────────────────────────
+  // ── 2. Provider adapter ────────────────────────────────────────
   const claudeAdapter = new ClaudeCodeAdapter();
   claudeAdapter.extensionPath = context.extensionPath;
   registerProvider(claudeAdapter);
 
-  // ── Session manager ─────────────────────────────────────────
+  // ── 3. Create all subsystem objects synchronously ──────────────
+  // All objects are created here (before any await) so that tree view
+  // providers can be registered immediately — before VS Code evaluates
+  // the layout context keys and tries to render the sidebar panels.
   sessionManager = new SessionManager();
   context.subscriptions.push(sessionManager);
-  await sessionManager.initialise();
 
-  // ── Approval engine ─────────────────────────────────────────
   approvalEngine = new ApprovalEngine();
   context.subscriptions.push(approvalEngine);
-  await approvalEngine.initialise();
 
   // Auto-dismiss approvals when sessions complete or error
   context.subscriptions.push(
@@ -104,29 +106,20 @@ async function activateFull(
     }),
   );
 
-  // ── Queue manager + dependency engine (Sprint 3) ─────────────
-  queueManager = new QueueManager(wsPath ?? '', sessionManager);
+  queueManager = new QueueManager(wsPath, sessionManager);
   context.subscriptions.push(queueManager);
-  await queueManager.initialise();
 
   dependencyEngine = new DependencyEngine(sessionManager, queueManager);
   context.subscriptions.push(dependencyEngine);
-  await dependencyEngine.initialise();
 
-  // ── Task feedback + detector (Sprint 4) ─────────────────────
   const taskFeedback = new TaskFeedback();
-  await taskFeedback.initialise();
 
-  taskDetector = new TaskDetector(wsPath ?? '', sessionManager, taskFeedback);
+  taskDetector = new TaskDetector(wsPath, sessionManager, taskFeedback);
   context.subscriptions.push(taskDetector);
-  await taskDetector.initialise();
 
-  // ── Template manager (Sprint 4) ──────────────────────────────
-  templateManager = new TemplateManager(wsPath ?? '', queueManager, dependencyEngine);
+  templateManager = new TemplateManager(wsPath, queueManager, dependencyEngine);
   context.subscriptions.push(templateManager);
-  await templateManager.initialise();
 
-  // ── Interaction manager + panel (Sprint 5) ─────────────────
   interactionManager = new InteractionManager(sessionManager);
   context.subscriptions.push(interactionManager);
 
@@ -139,19 +132,19 @@ async function activateFull(
   context.subscriptions.push(interactionPanel);
   interactionPanel.registerCommands(context);
 
-  // ── Views ───────────────────────────────────────────────────
+  // ── 4. Register ALL tree view providers ────────────────────────
+  // Registered synchronously before any await so that providers are
+  // always in place when VS Code first renders the sidebar panels.
+  // Views will show empty state until initialise() completes below.
   registerStatusBoard(context, sessionManager);
   const { treeView: approvalTreeView } = registerApprovalPanel(context, approvalEngine);
 
-  // ── Approval notifications (badge + toast) ──────────────────
   const approvalNotifier = new ApprovalNotifier(approvalEngine, approvalTreeView);
   context.subscriptions.push(approvalNotifier);
 
-  // ── Sprint 3 views ───────────────────────────────────────────
   registerPromptQueue(context, queueManager);
   registerDependencyTreeView(context, sessionManager, queueManager, dependencyEngine);
 
-  // ── Sprint 4 views ───────────────────────────────────────────
   const taskInboxProvider = new TaskInboxProvider(taskDetector, taskFeedback);
   context.subscriptions.push(taskInboxProvider);
   const taskInboxView = vscode.window.createTreeView(ViewId.TaskInbox, {
@@ -172,7 +165,7 @@ async function activateFull(
   context.subscriptions.push(templateLibraryView);
   templateLibraryProvider.registerCommands(context);
 
-  // ── Commands ────────────────────────────────────────────────
+  // ── 5. Commands ─────────────────────────────────────────────────
   registerNavigationCommands(context, sessionManager);
 
   context.subscriptions.push(
@@ -210,7 +203,7 @@ async function activateFull(
     }),
   );
 
-  // ── Setup wizard ─────────────────────────────────────────────
+  // ── 6. Setup wizard ─────────────────────────────────────────────
   const wizard = new SetupWizard(context, layoutManager);
   context.subscriptions.push(wizard);
   context.subscriptions.push(
@@ -219,12 +212,27 @@ async function activateFull(
     }),
   );
 
+  // In development (F5), always reset so the wizard appears for testing.
+  // In production, respect the persisted flag — show only on first install.
+  if (context.extensionMode === vscode.ExtensionMode.Development) {
+    await context.globalState.update(StateKey.HasCompletedSetup, false);
+  }
   const hasCompletedSetup = context.globalState.get<boolean>(StateKey.HasCompletedSetup, false);
   if (!hasCompletedSetup) {
     wizard.show();
   }
 
-  // ── Initial session refresh ─────────────────────────────────
+  // ── 7. Initialise all subsystems async ──────────────────────────
+  // Done after view registration so panels never show "no provider".
+  await sessionManager.initialise();
+  await approvalEngine.initialise();
+  await queueManager.initialise();
+  await dependencyEngine.initialise();
+  await taskFeedback.initialise();
+  await taskDetector.initialise();
+  await templateManager.initialise();
+
+  // ── 8. Initial session refresh ──────────────────────────────────
   if (wsPath) {
     sessionManager.refreshSessions(wsPath).catch(() => { /* non-fatal */ });
   }
