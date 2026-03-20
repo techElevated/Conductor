@@ -1,0 +1,49 @@
+{
+  "prompts": [
+    {
+      "id": "prompt-001",
+      "name": "API Layer",
+      "description": "Implement REST API endpoints",
+      "prompt": "Build the API endpoints for the payments feature",
+      "providerId": "claude-code",
+      "parallelSafe": true,
+      "complexity": "large",
+      "dependsOn": [],
+      "status": "queued",
+      "sessionId": null,
+      "position": 0,
+      "createdAt": "2026-03-19T10:00:00.000Z",
+      "launchedAt": null
+    },
+    {
+      "id": "prompt-002",
+      "name": "UI Layer",
+      "description": "Implement React components",
+      "prompt": "Build the React UI for the payments feature",
+      "providerId": "claude-code",
+      "parallelSafe": false,
+      "complexity": "medium",
+      "dependsOn": ["prompt-001"],
+      "status": "queued",
+      "sessionId": null,
+      "position": 1,
+      "createdAt": "2026-03-19T10:00:00.000Z",
+      "launchedAt": null
+    },
+    {
+      "id": "prompt-003",
+      "name": "Tests",
+      "description": "Write integration tests",
+      "prompt": "Write tests for the payments feature",
+      "providerId": "claude-code",
+      "parallelSafe": false,
+      "complexity": "small",
+      "dependsOn": ["prompt-001", "prompt-002"],
+      "status": "queued",
+      "sessionId": null,
+      "position": 2,
+      "createdAt": "2026-03-19T10:00:00.000Z",
+      "launchedAt": null
+    }
+  ]
+}

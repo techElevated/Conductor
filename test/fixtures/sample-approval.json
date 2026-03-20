@@ -1,0 +1,11 @@
+{
+  "id": "approval-001",
+  "sessionId": "session-abc123",
+  "sessionName": "6.5A — API refactor",
+  "tool": "Bash",
+  "command": "rm -rf node_modules && npm install",
+  "context": "Cleaning and reinstalling dependencies to resolve version conflicts",
+  "timestamp": "2026-03-19T10:05:00.000Z",
+  "status": "pending",
+  "resolvedAt": null
+}
