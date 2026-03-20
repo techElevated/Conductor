@@ -9,6 +9,7 @@ import * as assert from 'assert';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
+import * as crypto from 'crypto';
 
 // ── Lightweight mock setup ───────────────────────────────────────
 
@@ -124,5 +125,154 @@ describe('TaskDetector — fixture data', () => {
       assert.ok(['urgent', 'normal', 'low'].includes(task.priority), `Task "${task.id}" invalid priority`);
       assert.ok(['pending', 'in-progress', 'complete'].includes(task.status), `Task "${task.id}" invalid status`);
     }
+  });
+});
+
+// ── TaskDetector class-level tests ───────────────────────────────
+
+import { TaskDetector } from '../../../src/core/TaskDetector';
+import type { HumanTask, ConductorSession, SessionEvent } from '../../../src/types';
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+class StubSessionManager {
+  onSessionEvent = (_cb: (e: SessionEvent) => void) => ({ dispose: () => { /* no-op */ } });
+  getAllSessions(): ConductorSession[] { return []; }
+}
+
+class StubTaskFeedback {
+  isIgnored(_desc: string, _pattern?: string): boolean { return false; }
+}
+
+function makeTmpHome(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'conductor-td-'));
+  fs.mkdirSync(path.join(dir, '.conductor', 'tasks'), { recursive: true });
+  return dir;
+}
+
+/** Compute the workspace-hash used by getTasksFilePath. */
+function workspaceHash(workspacePath: string): string {
+  return crypto.createHash('sha256').update(workspacePath).digest('hex').slice(0, 16);
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function collectEvents(
+  subscribe: (cb: (e: any) => void) => { dispose: () => void },
+): { events: any[]; dispose: () => void } {
+  const events: any[] = [];
+  const disposable = subscribe((e: unknown) => { events.push(e); });
+  return { events, dispose: () => disposable.dispose() };
+}
+
+describe('TaskDetector — completeTask / dismissTask', () => {
+  const WORKSPACE = '/test-workspace';
+
+  let tmpHome: string;
+  let origHome: string | undefined;
+  let detector: TaskDetector;
+
+  const TASK_1: HumanTask = {
+    id: 'task-1',
+    sessionId: 'sess-1',
+    sessionName: 'Session 1',
+    description: 'Do the thing',
+    priority: 'normal',
+    blocking: false,
+    status: 'pending',
+    captureMethod: 'agent-tagged',
+    context: 'some context',
+    surfacedAt: '2026-01-01T00:00:00.000Z',
+    completedAt: null,
+  };
+
+  const TASK_2: HumanTask = {
+    id: 'task-2',
+    sessionId: 'sess-1',
+    sessionName: 'Session 1',
+    description: 'Another task',
+    priority: 'urgent',
+    blocking: true,
+    status: 'pending',
+    captureMethod: 'convention-parsed',
+    context: 'context 2',
+    surfacedAt: '2026-01-02T00:00:00.000Z',
+    completedAt: null,
+  };
+
+  beforeEach(async () => {
+    origHome = process.env.HOME;
+    tmpHome = makeTmpHome();
+    process.env.HOME = tmpHome;
+
+    // Pre-seed tasks file at the expected path
+    const hash = workspaceHash(WORKSPACE);
+    const tasksPath = path.join(tmpHome, '.conductor', 'tasks', `${hash}.json`);
+    fs.writeFileSync(tasksPath, JSON.stringify({ tasks: [TASK_1, TASK_2] }, null, 2));
+
+    detector = new TaskDetector(
+      WORKSPACE,
+      new StubSessionManager() as unknown as import('../../../src/core/SessionManager').SessionManager,
+      new StubTaskFeedback() as unknown as import('../../../src/core/TaskFeedback').TaskFeedback,
+    );
+    await detector.initialise();
+  });
+
+  afterEach(() => {
+    detector.dispose();
+    process.env.HOME = origHome;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it('getAllTasks returns all loaded tasks', () => {
+    assert.strictEqual(detector.getAllTasks().length, 2);
+  });
+
+  it('getPendingTasks returns only pending/in-progress tasks', () => {
+    assert.strictEqual(detector.getPendingTasks().length, 2);
+  });
+
+  it('getTasksBySession returns tasks for a specific session', () => {
+    const tasks = detector.getTasksBySession('sess-1');
+    assert.strictEqual(tasks.length, 2);
+    assert.ok(tasks.every(t => t.sessionId === 'sess-1'));
+  });
+
+  it('completeTask marks task as complete and sets completedAt', async () => {
+    await detector.completeTask('task-1');
+    const task = detector.getAllTasks().find(t => t.id === 'task-1');
+    assert.strictEqual(task?.status, 'complete');
+    assert.ok(typeof task?.completedAt === 'string' && task.completedAt.length > 0);
+  });
+
+  it('completeTask emits "completed" event', async () => {
+    const { events, dispose } = collectEvents(cb => detector.onTaskEvent(cb));
+    await detector.completeTask('task-1');
+    dispose();
+    assert.ok(events.some(e => e.type === 'completed' && e.task.id === 'task-1'));
+  });
+
+  it('completeTask is a no-op for unknown task', async () => {
+    const countBefore = detector.getAllTasks().length;
+    await detector.completeTask('no-such-task');
+    assert.strictEqual(detector.getAllTasks().length, countBefore);
+  });
+
+  it('dismissTask removes task from getAllTasks', async () => {
+    await detector.dismissTask('task-2');
+    assert.strictEqual(detector.getAllTasks().length, 1);
+    assert.ok(!detector.getAllTasks().some(t => t.id === 'task-2'));
+  });
+
+  it('dismissTask emits "dismissed" event', async () => {
+    const { events, dispose } = collectEvents(cb => detector.onTaskEvent(cb));
+    await detector.dismissTask('task-2');
+    dispose();
+    assert.ok(events.some(e => e.type === 'dismissed'));
+  });
+
+  it('completed tasks are excluded from getPendingTasks', async () => {
+    await detector.completeTask('task-1');
+    const pending = detector.getPendingTasks();
+    assert.ok(!pending.some(t => t.id === 'task-1'));
+    assert.ok(pending.some(t => t.id === 'task-2'));
   });
 });
