@@ -498,6 +498,11 @@
           "minimum": 10,
           "maximum": 500,
           "description": "Number of recent output entries shown in the interaction panel."
+        },
+        "conductor.claudePath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the Claude Code CLI binary. Leave blank for auto-detection. Example: /usr/local/bin/claude"
         }
       }
     }

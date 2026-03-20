@@ -180,9 +180,12 @@ export class SessionManager implements vscode.Disposable {
    * Merge externally discovered sessions (from provider adapters)
    * into the registry.  New sessions are added; known sessions have
    * their status refreshed.
+   *
+   * Returns the IDs of sessions that were newly added (not previously known).
    */
-  async mergeDiscovered(discovered: DiscoveredSession[], providerId: string): Promise<void> {
+  async mergeDiscovered(discovered: DiscoveredSession[], providerId: string): Promise<string[]> {
     let changed = false;
+    const newIds: string[] = [];
 
     for (const disc of discovered) {
       const existing = this.sessions.get(disc.id);
@@ -212,6 +215,7 @@ export class SessionManager implements vscode.Disposable {
           metadata: { discoveredExternally: true },
         };
         this.sessions.set(session.id, session);
+        newIds.push(session.id);
         changed = true;
         this.emit('created', session);
       }
@@ -220,6 +224,8 @@ export class SessionManager implements vscode.Disposable {
     if (changed) {
       await this.persistToDisk();
     }
+
+    return newIds;
   }
 
   // ── Discovery polling ───────────────────────────────────────
@@ -234,7 +240,26 @@ export class SessionManager implements vscode.Disposable {
     for (const provider of providers) {
       try {
         const discovered = await provider.discoverSessions(workspacePath);
-        await this.mergeDiscovered(discovered, provider.providerId);
+        const newIds = await this.mergeDiscovered(discovered, provider.providerId);
+
+        // Auto-install the approval hook for newly discovered sessions.
+        // Discovered sessions are not launched by Conductor so the hook
+        // is not yet present — installing it enables file-based IPC for approvals.
+        for (const id of newIds) {
+          const session = this.sessions.get(id);
+          if (!session || session.hookInstalled) { continue; }
+          try {
+            const managedSession: ManagedSession = {
+              id: session.id,
+              pid: session.pid ?? 0,
+              terminal: null,
+              workspacePath: session.workspacePath,
+            };
+            await provider.installApprovalHook(managedSession);
+            session.hookInstalled = true;
+            await this.persistToDisk();
+          } catch { /* hook installation failure is non-fatal */ }
+        }
       } catch {
         // Provider discovery failure is non-fatal; log and continue
       }

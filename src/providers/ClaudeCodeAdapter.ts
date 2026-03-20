@@ -12,7 +12,10 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import * as crypto from 'crypto';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import type {
   ProviderAdapter,
   DiscoveredSession,
@@ -40,6 +43,8 @@ import { getSessionApprovalsDir, getApprovalDecisionPath, getApprovalsDir } from
 import { listJsonFiles } from '../storage/FileStore';
 import { installHook, isHookInstalled } from '../hooks/hookInstaller';
 
+const execAsync = promisify(exec);
+
 // ── Adapter implementation ──────────────────────────────────────
 
 export class ClaudeCodeAdapter implements ProviderAdapter {
@@ -55,6 +60,9 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
 
   /** Map sessionId → Disposable for output watchers */
   private outputWatchers = new Map<string, vscode.Disposable>();
+
+  /** Cached resolved path to the claude binary */
+  private claudePathCache: string | null = null;
 
   // ── Discovery ─────────────────────────────────────────────
 
@@ -163,6 +171,16 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       CONDUCTOR_SESSION_NAME: config.sessionName,
     };
 
+    // Resolve the claude binary path before creating the terminal
+    let claudePath: string;
+    try {
+      claudePath = await this.resolveClaudePath();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Conductor: ${msg}`);
+      throw err;
+    }
+
     const terminal = await createTerminal(
       config.sessionName,
       config.terminalType,
@@ -175,7 +193,7 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
 
     // Send the claude command with the prompt
     const escapedPrompt = augmentedPrompt.replace(/'/g, "'\\''");
-    const cmd = `claude --prompt '${escapedPrompt}'${args.length ? ' ' + args.join(' ') : ''}`;
+    const cmd = `"${claudePath}" --prompt '${escapedPrompt}'${args.length ? ' ' + args.join(' ') : ''}`;
     terminal.sendText(cmd);
     terminal.show();
 
@@ -279,10 +297,26 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
 
   async sendMessage(sessionId: string, message: string): Promise<void> {
     const terminal = this.terminals.get(sessionId);
-    if (!terminal) {
-      throw new Error(`No terminal found for session "${sessionId}"`);
+    if (terminal) {
+      terminal.sendText(message);
+      return;
     }
-    terminal.sendText(message);
+
+    // For sessions discovered externally (not launched by Conductor), there is
+    // no terminal reference in our map.  Try to find a matching VS Code terminal
+    // by name, falling back to any visible Claude terminal.
+    const allTerminals = vscode.window.terminals;
+    const claudeTerminal = allTerminals.find(
+      t => t.name.toLowerCase().includes('claude'),
+    );
+    if (claudeTerminal) {
+      claudeTerminal.sendText(message, true);
+      return;
+    }
+
+    throw new Error(
+      'This session wasn\'t launched by Conductor. Open it in a terminal first, then try again.',
+    );
   }
 
   onSessionOutput(
@@ -372,6 +406,74 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       // Projects dir doesn't exist
     }
     return null;
+  }
+
+  // ── CLI path resolution ───────────────────────────────────
+
+  /**
+   * Resolve the absolute path to the claude binary.
+   *
+   * Resolution order:
+   *  1. `conductor.claudePath` VS Code setting (manual override)
+   *  2. Login-shell `which claude` (picks up user's ~/.zprofile / ~/.bash_profile PATH)
+   *  3. Common install locations (npm global, Homebrew, ~/.claude/bin)
+   *
+   * Result is cached for the lifetime of the adapter instance.
+   */
+  private async resolveClaudePath(): Promise<string> {
+    if (this.claudePathCache) { return this.claudePathCache; }
+
+    // 1. User-configured path
+    const config = vscode.workspace.getConfiguration('conductor');
+    const userPath = (config.get<string>('claudePath') ?? '').trim();
+    if (userPath) {
+      try {
+        fs.accessSync(userPath, fs.constants.X_OK);
+        this.claudePathCache = userPath;
+        return userPath;
+      } catch {
+        throw new Error(
+          `conductor.claudePath "${userPath}" is not executable. Check your Conductor settings.`,
+        );
+      }
+    }
+
+    // 2. Ask the user's login shell — this loads ~/.zprofile / ~/.bash_profile
+    //    so npm-global and Homebrew paths are visible.
+    const shells = ['/bin/zsh', '/bin/bash', '/bin/sh'];
+    for (const shell of shells) {
+      try {
+        const { stdout } = await execAsync(`${shell} -l -c 'which claude'`, { timeout: 5_000 });
+        const resolved = stdout.trim();
+        if (resolved) {
+          this.claudePathCache = resolved;
+          return resolved;
+        }
+      } catch { /* shell not available or claude not on that shell's PATH */ }
+    }
+
+    // 3. Common install locations
+    const candidates = [
+      '/usr/local/bin/claude',
+      path.join(os.homedir(), '.npm-global', 'bin', 'claude'),
+      path.join(os.homedir(), '.local', 'bin', 'claude'),
+      '/opt/homebrew/bin/claude',
+      path.join(os.homedir(), '.claude', 'bin', 'claude'),
+      path.join(os.homedir(), '.nvm', 'current', 'bin', 'claude'),
+    ];
+    for (const p of candidates) {
+      try {
+        fs.accessSync(p, fs.constants.X_OK);
+        this.claudePathCache = p;
+        return p;
+      } catch { continue; }
+    }
+
+    // 4. Not found
+    throw new Error(
+      'Claude Code CLI not found. Install it with: npm install -g @anthropic-ai/claude-code\n' +
+      'Or set the path manually via the "conductor.claudePath" setting.',
+    );
   }
 
   // ── Private helpers ───────────────────────────────────────

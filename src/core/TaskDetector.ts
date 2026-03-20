@@ -122,6 +122,30 @@ export class TaskDetector implements vscode.Disposable {
     this._onTaskEvent.fire({ type: 'dismissed', task });
   }
 
+  /**
+   * Manually add a human task (captureMethod: 'manual').
+   * Persists to disk and fires a task event so the inbox refreshes.
+   */
+  async addTask(description: string): Promise<void> {
+    const task: InternalTask = {
+      id: uuid(),
+      sessionId: 'manual',
+      sessionName: 'Manual',
+      description,
+      priority: 'normal',
+      blocking: false,
+      status: 'pending',
+      captureMethod: 'manual',
+      context: '',
+      surfacedAt: new Date().toISOString(),
+      completedAt: null,
+    };
+
+    this.tasks.set(task.id, task);
+    await this.saveToDisk();
+    this._onTaskEvent.fire({ type: 'detected', task });
+  }
+
   // ── Watcher management ───────────────────────────────────────
 
   private watchSession(session: ConductorSession): void {

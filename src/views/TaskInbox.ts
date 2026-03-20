@@ -225,6 +225,8 @@ export class TaskInboxProvider
           placeHolder: 'e.g. Restart the gateway service',
         });
         if (!description) {return;}
+        await this.detector.addTask(description);
+        this._onDidChangeTreeData.fire();
         vscode.window.showInformationMessage(`Conductor: Task "${description}" captured manually.`);
       }),
     );
