@@ -12,8 +12,22 @@
   "engines": {
     "vscode": "^1.85.0"
   },
+  "icon": "media/conductor-icon-128.png",
+  "galleryBanner": {
+    "color": "#1e1e2e",
+    "theme": "dark"
+  },
+  "badges": [
+    {
+      "url": "https://img.shields.io/visual-studio-marketplace/v/techElevated.conductor",
+      "href": "https://marketplace.visualstudio.com/items?itemName=techElevated.conductor",
+      "description": "VS Code Marketplace Version"
+    }
+  ],
+  "markdown": "github",
   "categories": [
-    "Other"
+    "Other",
+    "Machine Learning"
   ],
   "keywords": [
     "ai",

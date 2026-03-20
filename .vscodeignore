@@ -11,3 +11,11 @@ coverage/**
 .nyc_output/**
 *.md
 !README.md
+!CHANGELOG.md
+test/**
+scripts/**
+sprintprompts
+Conductor_Implementation_Plan.md
+Conductor_PRD_v1.1.md
+.eslintrc*
+.github/**
