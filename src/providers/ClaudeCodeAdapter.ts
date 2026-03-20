@@ -131,8 +131,11 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       env,
     );
 
+    // Append Conductor system context so the agent emits structured task tags
+    const augmentedPrompt = appendConductorSystemContext(config.prompt);
+
     // Send the claude command with the prompt
-    const escapedPrompt = config.prompt.replace(/'/g, "'\\''");
+    const escapedPrompt = augmentedPrompt.replace(/'/g, "'\\''");
     const cmd = `claude --prompt '${escapedPrompt}'${args.length ? ' ' + args.join(' ') : ''}`;
     terminal.sendText(cmd);
     terminal.show();
@@ -391,4 +394,29 @@ export class ClaudeCodeAdapter implements ProviderAdapter {
       // Directory doesn't exist or already cleaned up
     }
   }
+}
+
+// ── Module-level helpers ──────────────────────────────────────────
+
+/**
+ * Append the Conductor system context to a prompt so the agent emits
+ * structured [CONDUCTOR_TASK] blocks when human action is required.
+ *
+ * Implementation Plan §7 Task 4.5 — system prompt injection.
+ */
+export function appendConductorSystemContext(prompt: string): string {
+  const systemContext = `
+
+---
+CONDUCTOR SYSTEM CONTEXT:
+When you need the human operator to perform an action (restart a service, configure a tool, run a command outside this session, etc.), output it in this exact format:
+[CONDUCTOR_TASK]
+description: <what the human needs to do>
+priority: normal|urgent|low
+blocking: true|false
+[/CONDUCTOR_TASK]
+Use this format instead of prose requests. This allows Conductor to surface the task in the operator's inbox.
+---`;
+
+  return prompt + systemContext;
 }
