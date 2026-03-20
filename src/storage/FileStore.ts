@@ -6,6 +6,7 @@
  * rename strategy to avoid partial-write corruption.
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -38,7 +39,7 @@ export async function writeJsonFile<T>(filePath: string, data: T): Promise<void>
 
   const tmpPath = path.join(
     dir,
-    `.tmp-${path.basename(filePath)}-${process.pid}-${Date.now()}`,
+    `.tmp-${path.basename(filePath)}-${process.pid}-${crypto.randomBytes(6).toString('hex')}`,
   );
 
   try {
