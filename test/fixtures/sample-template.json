@@ -1,0 +1,52 @@
+{
+  "id": "tpl-001",
+  "name": "Full-Stack Feature Sprint",
+  "description": "3-session template for a complete feature: API + UI + tests",
+  "version": 1,
+  "scope": "user",
+  "variables": [
+    {
+      "name": "featureName",
+      "description": "The name of the feature being built",
+      "default": "my-feature",
+      "required": true
+    },
+    {
+      "name": "targetBranch",
+      "description": "Git branch to work on",
+      "default": "dev",
+      "required": false
+    }
+  ],
+  "sessions": [
+    {
+      "templateSessionId": "s-api",
+      "name": "{{featureName}} — API layer",
+      "prompt": "Implement the API endpoints for {{featureName}} on branch {{targetBranch}}. Focus on routes, validation, and error handling.",
+      "providerId": "claude-code",
+      "parallelSafe": true,
+      "dependsOn": [],
+      "permissionMode": "default"
+    },
+    {
+      "templateSessionId": "s-ui",
+      "name": "{{featureName}} — UI layer",
+      "prompt": "Implement the React UI components for {{featureName}}. Use the API endpoints built in the API session.",
+      "providerId": "claude-code",
+      "parallelSafe": false,
+      "dependsOn": ["s-api"],
+      "permissionMode": "default"
+    },
+    {
+      "templateSessionId": "s-tests",
+      "name": "{{featureName}} — Tests",
+      "prompt": "Write integration tests for {{featureName}} covering both the API and UI layers.",
+      "providerId": "claude-code",
+      "parallelSafe": false,
+      "dependsOn": ["s-api", "s-ui"],
+      "permissionMode": "default"
+    }
+  ],
+  "createdAt": "2026-03-19T10:00:00.000Z",
+  "lastUsedAt": null
+}
