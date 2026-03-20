@@ -472,7 +472,9 @@
     "lint": "eslint src --ext ts",
     "test": "vscode-test",
     "test-compile": "tsc -p . --outDir out",
-    "test:unit": "tsc -p tsconfig.test.json && cp -r test/fixtures out/test/test/ && mocha"
+    "test:unit": "tsc -p tsconfig.test.json && cp -r test/fixtures out/test/test/ && mocha",
+    "test:integration": "tsc -p tsconfig.test.json && mocha --require out/test/test/setup.js --timeout 15000 'out/test/test/integration/**/*.test.js'",
+    "test:all": "tsc -p tsconfig.test.json && cp -r test/fixtures out/test/test/ && mocha --timeout 15000 --spec 'out/test/test/**/*.test.js'"
   },
   "devDependencies": {
     "@types/chai": "^4.3.11",

@@ -1,490 +1,307 @@
 /**
  * Conductor — Integration test: Dependency Chain Flow.
  *
- * Tests the complete dependency chain flow:
- * 1. Create 3 prompts: A, B (depends on A), C (depends on B).
- * 2. Verify DAG validation rejects cycles.
- * 3. Simulate completion and verify auto-launch would fire.
- * 4. Verify blocking on error.
- * 5. Verify diamond dependency (A → B, A → C, B → D, C → D).
+ * Exercises the real SessionManager, QueueManager, and DependencyEngine
+ * together to verify auto-launch on completion:
  *
- * This test exercises the queue JSON and dependency logic without
- * VS Code APIs by directly manipulating the filesystem.
- *
- * Run: npx mocha --require ts-node/register test/integration/dependency-chain.test.ts
+ * 1. Create A → B → C chain
+ * 2. Launch A manually
+ * 3. Simulate A completing → verify B auto-launches
+ * 4. Simulate B completing → verify C auto-launches
+ * 5. Verify chain status summary at each step
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as assert from 'assert';
-import * as crypto from 'crypto';
-import { v4 as uuid } from 'uuid';
 
-// ── Types (matching extension types) ────────────────────────────
+import { SessionManager } from '../../src/core/SessionManager';
+import { QueueManager } from '../../src/core/QueueManager';
+import { DependencyEngine } from '../../src/core/DependencyEngine';
+import type { DependencyEvent } from '../../src/core/DependencyEngine';
+import { registerProvider, clearProviders } from '../../src/providers';
+import { createMockProvider } from '../helpers/mockProvider';
 
-interface QueuedPrompt {
-  id: string;
-  name: string;
-  description: string;
-  prompt: string;
-  providerId: string;
-  parallelSafe: boolean;
-  complexity: 'small' | 'medium' | 'large';
-  dependsOn: string[];
-  status: 'queued' | 'launched' | 'cancelled';
-  sessionId: string | null;
-  position: number;
-  createdAt: string;
-  launchedAt: string | null;
-}
+// ── Event helpers ────────────────────────────────────────────────
 
-interface QueueFile {
-  prompts: QueuedPrompt[];
-}
+function waitForDependencyEvent(
+  engine: DependencyEngine,
+  type: DependencyEvent['type'],
+  timeoutMs = 5000,
+): Promise<DependencyEvent> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      disposable.dispose();
+      reject(new Error(`Timed out waiting for '${type}' event after ${timeoutMs}ms`));
+    }, timeoutMs);
 
-interface SessionsFile {
-  sessions: Array<{
-    id: string;
-    name: string;
-    status: string;
-    [key: string]: unknown;
-  }>;
-}
-
-// ── Test helpers ────────────────────────────────────────────────
-
-const TEST_DIR = path.join(os.tmpdir(), `conductor-dep-test-${process.pid}`);
-const QUEUE_DIR = path.join(TEST_DIR, 'queue');
-const SESSIONS_PATH = path.join(TEST_DIR, 'sessions.json');
-
-function hashPath(p: string): string {
-  return crypto.createHash('sha256').update(p).digest('hex').slice(0, 16);
-}
-
-const WORKSPACE_PATH = '/test/workspace';
-const QUEUE_PATH = path.join(QUEUE_DIR, `${hashPath(WORKSPACE_PATH)}.json`);
-
-function makePrompt(overrides: Partial<QueuedPrompt> = {}): QueuedPrompt {
-  return {
-    id: overrides.id ?? uuid(),
-    name: overrides.name ?? 'Test Prompt',
-    description: overrides.description ?? '',
-    prompt: overrides.prompt ?? 'test prompt text',
-    providerId: 'claude-code',
-    parallelSafe: overrides.parallelSafe ?? true,
-    complexity: overrides.complexity ?? 'medium',
-    dependsOn: overrides.dependsOn ?? [],
-    status: overrides.status ?? 'queued',
-    sessionId: overrides.sessionId ?? null,
-    position: overrides.position ?? 0,
-    createdAt: new Date().toISOString(),
-    launchedAt: overrides.launchedAt ?? null,
-  };
-}
-
-function readQueue(): QueueFile {
-  try {
-    const raw = fs.readFileSync(QUEUE_PATH, 'utf-8');
-    return JSON.parse(raw) as QueueFile;
-  } catch {
-    return { prompts: [] };
-  }
-}
-
-function writeQueue(data: QueueFile): void {
-  fs.mkdirSync(path.dirname(QUEUE_PATH), { recursive: true });
-  fs.writeFileSync(QUEUE_PATH, JSON.stringify(data, null, 2) + '\n');
-}
-
-/**
- * Kahn's algorithm for cycle detection (mirrors DependencyEngine logic).
- */
-function validateDAG(prompts: QueuedPrompt[]): { valid: boolean; cycleNodes?: string[] } {
-  const promptsMap = new Map(prompts.map(p => [p.id, p]));
-  const inDegree = new Map<string, number>();
-  const adjacency = new Map<string, string[]>();
-
-  for (const [id] of promptsMap) {
-    inDegree.set(id, 0);
-    adjacency.set(id, []);
-  }
-
-  for (const [id, prompt] of promptsMap) {
-    for (const dep of prompt.dependsOn) {
-      if (promptsMap.has(dep)) {
-        adjacency.get(dep)!.push(id);
-        inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
+    const disposable = engine.onDependencyEvent((event: DependencyEvent) => {
+      if (event.type === type) {
+        clearTimeout(timer);
+        disposable.dispose();
+        resolve(event);
       }
-    }
-  }
-
-  const queue: string[] = [];
-  for (const [id, degree] of inDegree) {
-    if (degree === 0) { queue.push(id); }
-  }
-
-  const sorted: string[] = [];
-  while (queue.length > 0) {
-    const node = queue.shift()!;
-    sorted.push(node);
-    for (const downstream of (adjacency.get(node) ?? [])) {
-      const newDeg = (inDegree.get(downstream) ?? 1) - 1;
-      inDegree.set(downstream, newDeg);
-      if (newDeg === 0) { queue.push(downstream); }
-    }
-  }
-
-  if (sorted.length === promptsMap.size) {
-    return { valid: true };
-  }
-
-  const cycleNodes = [...promptsMap.keys()].filter(id => !sorted.includes(id));
-  return { valid: false, cycleNodes };
-}
-
-/**
- * Simulate checking if all dependencies are met for a prompt.
- */
-function allDependenciesMet(
-  prompt: QueuedPrompt,
-  prompts: QueuedPrompt[],
-  sessions: SessionsFile,
-): boolean {
-  for (const depId of prompt.dependsOn) {
-    // Check if dependency is a prompt whose session is complete
-    const depPrompt = prompts.find(p => p.id === depId);
-    if (depPrompt?.sessionId) {
-      const session = sessions.sessions.find(s => s.id === depPrompt.sessionId);
-      if (session?.status === 'complete') { continue; }
-    }
-    // Check direct session reference
-    const session = sessions.sessions.find(s => s.id === depId);
-    if (session?.status === 'complete') { continue; }
-    return false;
-  }
-  return true;
-}
-
-/**
- * Get all prompts that depend on a given ID.
- */
-function getDependents(targetId: string, prompts: QueuedPrompt[]): QueuedPrompt[] {
-  return prompts.filter(p => {
-    if (p.dependsOn.includes(targetId)) { return true; }
-    // Check via sessionId
-    const depPrompts = prompts.filter(dp => dp.sessionId === targetId);
-    return depPrompts.some(dp => p.dependsOn.includes(dp.id));
+    });
   });
 }
 
-async function cleanup(): Promise<void> {
-  await fs.promises.rm(TEST_DIR, { recursive: true, force: true });
-}
-
-// ── Tests ───────────────────────────────────────────────────────
+// ── Suite ────────────────────────────────────────────────────────
 
 describe('Dependency Chain Integration', () => {
+  let tmpHome: string;
+  let origHome: string | undefined;
+  let sm: SessionManager;
+  let qm: QueueManager;
+  let de: DependencyEngine;
+  const workspacePath = '/tmp/test-workspace';
+
   beforeEach(async () => {
-    await fs.promises.mkdir(QUEUE_DIR, { recursive: true });
-    await fs.promises.mkdir(TEST_DIR, { recursive: true });
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'conductor-dep-integ-'));
+    origHome = process.env.HOME;
+    process.env.HOME = tmpHome;
+
+    fs.mkdirSync(path.join(tmpHome, '.conductor', 'queue'), { recursive: true });
+
+    clearProviders();
+    const mock = createMockProvider();
+    registerProvider(mock.provider);
+
+    sm = new SessionManager();
+    qm = new QueueManager(workspacePath, sm as any);
+    de = new DependencyEngine(sm as any, qm as any);
+
+    await sm.initialise();
+    await qm.initialise();
+    await de.initialise();
   });
 
-  afterEach(async () => {
-    await cleanup();
+  afterEach(() => {
+    de.dispose();
+    qm.dispose();
+    sm.dispose();
+    clearProviders();
+    process.env.HOME = origHome;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  // ── 1. Linear chain: A → B → C ─────────────────────────
+  // ── 1. Linear chain A → B → C auto-launch ───────────────────
 
-  it('should create a 3-step linear chain A → B → C', () => {
-    const a = makePrompt({ name: 'A — Route definitions', position: 0 });
-    const b = makePrompt({ name: 'B — Auth middleware', position: 1, dependsOn: [a.id] });
-    const c = makePrompt({ name: 'C — Integration tests', position: 2, dependsOn: [b.id] });
-
-    const queue: QueueFile = { prompts: [a, b, c] };
-    writeQueue(queue);
-
-    const loaded = readQueue();
-    assert.strictEqual(loaded.prompts.length, 3);
-
-    // Verify dependency structure
-    assert.deepStrictEqual(loaded.prompts[0].dependsOn, []);
-    assert.deepStrictEqual(loaded.prompts[1].dependsOn, [a.id]);
-    assert.deepStrictEqual(loaded.prompts[2].dependsOn, [b.id]);
+  it('A completes → B auto-launches → B completes → C auto-launches', async () => {
+    // Create the chain
+    const promptA = await qm.addPrompt({ name: 'A — Route definitions', prompt: 'Create routes' });
+    const promptB = await qm.addPrompt({ name: 'B — Auth middleware', prompt: 'Add auth', dependsOn: [promptA.id] });
+    const promptC = await qm.addPrompt({ name: 'C — Integration tests', prompt: 'Write tests', dependsOn: [promptB.id] });
 
     // Validate DAG
-    const validation = validateDAG(loaded.prompts);
+    const validation = de.validateDAG();
     assert.ok(validation.valid, 'Linear chain should be a valid DAG');
+
+    // Launch A manually
+    const sessionA = await qm.launchPrompt(promptA.id);
+    assert.strictEqual(sm.getSession(sessionA.id)!.status, 'running');
+
+    // B and C should still be queued
+    assert.strictEqual(qm.getPrompt(promptB.id)!.status, 'queued');
+    assert.strictEqual(qm.getPrompt(promptC.id)!.status, 'queued');
+
+    // Check chain status: 1 running (A), 2 queued (B, C)
+    const status1 = de.getChainStatus();
+    assert.strictEqual(status1.total, 3);
+    assert.strictEqual(status1.running, 1);
+    assert.strictEqual(status1.queued, 2);
+
+    // Set up listener for B auto-launch, then complete A
+    const bAutoLaunch = waitForDependencyEvent(de, 'auto-launched');
+    await sm.updateStatus(sessionA.id, 'complete');
+
+    // Wait for B to auto-launch
+    const eventB = await bAutoLaunch;
+    assert.strictEqual(eventB.promptId, promptB.id);
+    assert.strictEqual(eventB.upstreamId, sessionA.id);
+
+    // B should now be launched
+    const bPrompt = qm.getPrompt(promptB.id)!;
+    assert.strictEqual(bPrompt.status, 'launched');
+    assert.ok(bPrompt.sessionId, 'B should have a session ID');
+    assert.strictEqual(sm.getSession(bPrompt.sessionId!)!.status, 'running');
+
+    // C should still be queued
+    assert.strictEqual(qm.getPrompt(promptC.id)!.status, 'queued');
+
+    // Chain status: 1 complete (A), 1 running (B), 1 queued (C)
+    const status2 = de.getChainStatus();
+    assert.strictEqual(status2.complete, 1);
+    assert.strictEqual(status2.running, 1);
+    assert.strictEqual(status2.queued, 1);
+
+    // Set up listener for C auto-launch, then complete B
+    const cAutoLaunch = waitForDependencyEvent(de, 'auto-launched');
+    await sm.updateStatus(bPrompt.sessionId!, 'complete');
+
+    // Wait for C to auto-launch
+    const eventC = await cAutoLaunch;
+    assert.strictEqual(eventC.promptId, promptC.id);
+
+    // C should now be launched
+    const cPrompt = qm.getPrompt(promptC.id)!;
+    assert.strictEqual(cPrompt.status, 'launched');
+    assert.ok(cPrompt.sessionId);
+    assert.strictEqual(sm.getSession(cPrompt.sessionId!)!.status, 'running');
+
+    // Chain status: 2 complete, 1 running
+    const status3 = de.getChainStatus();
+    assert.strictEqual(status3.complete, 2);
+    assert.strictEqual(status3.running, 1);
+    assert.strictEqual(status3.queued, 0);
   });
 
-  // ── 2. Cycle detection: A → B → A ──────────────────────
+  // ── 2. Error blocking ────────────────────────────────────────
 
-  it('should detect circular dependency A → B → A', () => {
-    const aId = uuid();
-    const bId = uuid();
+  it('upstream error blocks downstream prompts', async () => {
+    const promptA = await qm.addPrompt({ name: 'A', prompt: 'Do A' });
+    const promptB = await qm.addPrompt({ name: 'B', prompt: 'Do B', dependsOn: [promptA.id] });
 
-    const a = makePrompt({ id: aId, name: 'A', dependsOn: [bId] });
-    const b = makePrompt({ id: bId, name: 'B', dependsOn: [aId] });
+    const sessionA = await qm.launchPrompt(promptA.id);
 
-    const validation = validateDAG([a, b]);
-    assert.ok(!validation.valid, 'Circular dependency should be detected');
-    assert.ok(validation.cycleNodes, 'Should identify cycle nodes');
-    assert.ok(validation.cycleNodes!.length === 2, 'Both nodes should be in the cycle');
+    // Set up listener for blocked event
+    const blockedEvent = waitForDependencyEvent(de, 'blocked');
+    await sm.updateStatus(sessionA.id, 'error');
+
+    const event = await blockedEvent;
+    assert.strictEqual(event.promptId, promptB.id);
+    assert.strictEqual(event.upstreamId, sessionA.id);
+
+    // B should be cancelled
+    assert.strictEqual(qm.getPrompt(promptB.id)!.status, 'cancelled');
   });
 
-  it('should detect 3-node cycle: A → B → C → A', () => {
-    const aId = uuid();
-    const bId = uuid();
-    const cId = uuid();
+  // ── 3. Cycle detection ───────────────────────────────────────
 
-    const a = makePrompt({ id: aId, name: 'A', dependsOn: [cId] });
-    const b = makePrompt({ id: bId, name: 'B', dependsOn: [aId] });
-    const c = makePrompt({ id: cId, name: 'C', dependsOn: [bId] });
+  it('rejects cycles via addDependency', async () => {
+    const promptA = await qm.addPrompt({ name: 'A', prompt: 'Do A' });
+    const promptB = await qm.addPrompt({ name: 'B', prompt: 'Do B', dependsOn: [promptA.id] });
 
-    const validation = validateDAG([a, b, c]);
-    assert.ok(!validation.valid, 'Three-node cycle should be detected');
-  });
-
-  // ── 3. Auto-launch on completion ───────────────────────
-
-  it('should recognize when B can launch after A completes', () => {
-    const a = makePrompt({
-      name: 'A',
-      status: 'launched',
-      sessionId: 'session-a',
-    });
-    const b = makePrompt({
-      name: 'B',
-      dependsOn: [a.id],
-    });
-
-    const sessions: SessionsFile = {
-      sessions: [
-        { id: 'session-a', name: 'A', status: 'complete' },
-      ],
-    };
-
-    // B's dependencies should be met now
-    assert.ok(
-      allDependenciesMet(b, [a, b], sessions),
-      'B dependencies should be met after A completes',
+    // Trying to make A depend on B should fail (creates cycle)
+    await assert.rejects(
+      () => de.addDependency(promptA.id, [promptB.id]),
+      /cycle/i,
     );
   });
 
-  it('should NOT recognize B as ready when A is still running', () => {
-    const a = makePrompt({
-      name: 'A',
-      status: 'launched',
-      sessionId: 'session-a',
-    });
-    const b = makePrompt({
-      name: 'B',
-      dependsOn: [a.id],
-    });
+  // ── 4. Diamond dependency ────────────────────────────────────
 
-    const sessions: SessionsFile = {
-      sessions: [
-        { id: 'session-a', name: 'A', status: 'running' },
-      ],
-    };
+  it('diamond: D launches only after both B and C complete', async () => {
+    const pA = await qm.addPrompt({ name: 'A', prompt: 'Do A' });
+    const pB = await qm.addPrompt({ name: 'B', prompt: 'Do B', dependsOn: [pA.id] });
+    const pC = await qm.addPrompt({ name: 'C', prompt: 'Do C', dependsOn: [pA.id] });
+    const pD = await qm.addPrompt({ name: 'D', prompt: 'Do D', dependsOn: [pB.id, pC.id] });
 
-    assert.ok(
-      !allDependenciesMet(b, [a, b], sessions),
-      'B dependencies should NOT be met while A is running',
-    );
-  });
+    // Valid DAG
+    assert.ok(de.validateDAG().valid);
 
-  // ── 4. Full chain: A completes → B launches → B completes → C launches
+    // Launch and complete A
+    const sA = await qm.launchPrompt(pA.id);
 
-  it('should support full 3-step chain progression', () => {
-    const a = makePrompt({ name: 'A', position: 0 });
-    const b = makePrompt({ name: 'B', position: 1, dependsOn: [a.id] });
-    const c = makePrompt({ name: 'C', position: 2, dependsOn: [b.id] });
-
-    const prompts = [a, b, c];
-    const sessions: SessionsFile = { sessions: [] };
-
-    // Step 1: A is launched and running
-    a.status = 'launched';
-    a.sessionId = 'session-a';
-    sessions.sessions.push({ id: 'session-a', name: 'A', status: 'running' });
-
-    assert.ok(!allDependenciesMet(b, prompts, sessions), 'B not ready while A runs');
-    assert.ok(!allDependenciesMet(c, prompts, sessions), 'C not ready while A runs');
-
-    // Step 2: A completes
-    sessions.sessions[0].status = 'complete';
-    assert.ok(allDependenciesMet(b, prompts, sessions), 'B ready after A completes');
-    assert.ok(!allDependenciesMet(c, prompts, sessions), 'C still not ready (B not launched)');
-
-    // Step 3: B is launched and running
-    b.status = 'launched';
-    b.sessionId = 'session-b';
-    sessions.sessions.push({ id: 'session-b', name: 'B', status: 'running' });
-
-    assert.ok(!allDependenciesMet(c, prompts, sessions), 'C not ready while B runs');
-
-    // Step 4: B completes
-    sessions.sessions[1].status = 'complete';
-    assert.ok(allDependenciesMet(c, prompts, sessions), 'C ready after B completes');
-  });
-
-  // ── 5. Error blocking ──────────────────────────────────
-
-  it('should NOT allow B to launch when A errors', () => {
-    const a = makePrompt({
-      name: 'A',
-      status: 'launched',
-      sessionId: 'session-a',
-    });
-    const b = makePrompt({
-      name: 'B',
-      dependsOn: [a.id],
+    // Collect all auto-launched IDs
+    const autoLaunched: string[] = [];
+    de.onDependencyEvent((e: DependencyEvent) => {
+      if (e.type === 'auto-launched') { autoLaunched.push(e.promptId); }
     });
 
-    const sessions: SessionsFile = {
-      sessions: [
-        { id: 'session-a', name: 'A', status: 'error' },
-      ],
-    };
+    await sm.updateStatus(sA.id, 'complete');
 
-    assert.ok(
-      !allDependenciesMet(b, [a, b], sessions),
-      'B should NOT launch when A has errored',
-    );
+    // Wait for B and C to auto-launch
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    assert.ok(autoLaunched.includes(pB.id), 'B should auto-launch after A completes');
+    assert.ok(autoLaunched.includes(pC.id), 'C should auto-launch after A completes');
+    assert.ok(!autoLaunched.includes(pD.id), 'D should NOT auto-launch yet');
+
+    // D should still be queued
+    assert.strictEqual(qm.getPrompt(pD.id)!.status, 'queued');
+
+    // Complete B
+    const bSessionId = qm.getPrompt(pB.id)!.sessionId!;
+    await sm.updateStatus(bSessionId, 'complete');
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    // D still not launched (C still running)
+    assert.ok(!autoLaunched.includes(pD.id), 'D should NOT auto-launch with only B complete');
+
+    // Complete C
+    const cSessionId = qm.getPrompt(pC.id)!.sessionId!;
+
+    const dAutoLaunch = waitForDependencyEvent(de, 'auto-launched');
+    await sm.updateStatus(cSessionId, 'complete');
+    const eventD = await dAutoLaunch;
+
+    assert.strictEqual(eventD.promptId, pD.id, 'D should auto-launch after B+C complete');
+    assert.strictEqual(qm.getPrompt(pD.id)!.status, 'launched');
   });
 
-  // ── 6. Diamond dependency: A → B, A → C, B → D, C → D ─
+  // ── 5. Topological order ─────────────────────────────────────
 
-  it('should handle diamond dependency correctly', () => {
-    const a = makePrompt({ name: 'A', position: 0 });
-    const b = makePrompt({ name: 'B', position: 1, dependsOn: [a.id] });
-    const c = makePrompt({ name: 'C', position: 2, dependsOn: [a.id] });
-    const d = makePrompt({ name: 'D', position: 3, dependsOn: [b.id, c.id] });
+  it('getTopologicalOrder returns correct order', async () => {
+    const pA = await qm.addPrompt({ name: 'A', prompt: 'Do A' });
+    const pB = await qm.addPrompt({ name: 'B', prompt: 'Do B', dependsOn: [pA.id] });
+    const pC = await qm.addPrompt({ name: 'C', prompt: 'Do C', dependsOn: [pB.id] });
 
-    const prompts = [a, b, c, d];
+    const order = de.getTopologicalOrder();
+    const names = order.map(p => p.name);
 
-    // Validate DAG (should be valid)
-    const validation = validateDAG(prompts);
-    assert.ok(validation.valid, 'Diamond dependency should be a valid DAG');
-
-    const sessions: SessionsFile = { sessions: [] };
-
-    // A completes
-    a.status = 'launched';
-    a.sessionId = 'session-a';
-    sessions.sessions.push({ id: 'session-a', name: 'A', status: 'complete' });
-
-    assert.ok(allDependenciesMet(b, prompts, sessions), 'B ready after A completes');
-    assert.ok(allDependenciesMet(c, prompts, sessions), 'C ready after A completes');
-    assert.ok(!allDependenciesMet(d, prompts, sessions), 'D NOT ready (B and C not done)');
-
-    // B completes, C still running
-    b.status = 'launched';
-    b.sessionId = 'session-b';
-    sessions.sessions.push({ id: 'session-b', name: 'B', status: 'complete' });
-
-    c.status = 'launched';
-    c.sessionId = 'session-c';
-    sessions.sessions.push({ id: 'session-c', name: 'C', status: 'running' });
-
-    assert.ok(!allDependenciesMet(d, prompts, sessions), 'D NOT ready (C still running)');
-
-    // C completes → D should now be ready
-    sessions.sessions[2].status = 'complete';
-    assert.ok(allDependenciesMet(d, prompts, sessions), 'D ready after BOTH B and C complete');
+    assert.strictEqual(names.indexOf('A'), 0, 'A should be first');
+    assert.ok(names.indexOf('B') < names.indexOf('C'), 'B should come before C');
   });
 
-  // ── 7. getDependents ───────────────────────────────────
+  // ── 6. getDependents ─────────────────────────────────────────
 
-  it('should find all dependents of a prompt', () => {
-    const a = makePrompt({ name: 'A' });
-    const b = makePrompt({ name: 'B', dependsOn: [a.id] });
-    const c = makePrompt({ name: 'C', dependsOn: [a.id] });
-    const d = makePrompt({ name: 'D', dependsOn: [b.id] });
+  it('getDependents finds direct dependents', async () => {
+    const pA = await qm.addPrompt({ name: 'A', prompt: 'Do A' });
+    const pB = await qm.addPrompt({ name: 'B', prompt: 'Do B', dependsOn: [pA.id] });
+    const pC = await qm.addPrompt({ name: 'C', prompt: 'Do C', dependsOn: [pA.id] });
+    await qm.addPrompt({ name: 'D', prompt: 'Do D', dependsOn: [pB.id] });
 
-    const prompts = [a, b, c, d];
-    const dependents = getDependents(a.id, prompts);
-
-    assert.strictEqual(dependents.length, 2, 'A should have 2 dependents (B and C)');
-    assert.ok(dependents.some(p => p.id === b.id), 'B should depend on A');
-    assert.ok(dependents.some(p => p.id === c.id), 'C should depend on A');
+    const dependents = de.getDependents(pA.id);
+    assert.strictEqual(dependents.length, 2, 'A should have 2 direct dependents');
+    const depNames = dependents.map(p => p.name).sort();
+    assert.deepStrictEqual(depNames, ['B', 'C']);
   });
 
-  // ── 8. Persistence ─────────────────────────────────────
+  // ── 7. getDependents via sessionId ────────────────────────────
 
-  it('should persist queue and dependencies across reads', () => {
-    const a = makePrompt({ name: 'A', position: 0 });
-    const b = makePrompt({ name: 'B', position: 1, dependsOn: [a.id] });
-    const c = makePrompt({ name: 'C', position: 2, dependsOn: [b.id] });
+  it('getDependents finds dependents via sessionId', async () => {
+    const pA = await qm.addPrompt({ name: 'A', prompt: 'Do A' });
+    const pB = await qm.addPrompt({ name: 'B', prompt: 'Do B', dependsOn: [pA.id] });
 
-    writeQueue({ prompts: [a, b, c] });
+    // Launch A → sets sessionId on prompt A
+    const sA = await qm.launchPrompt(pA.id);
 
-    // Read back
-    const loaded = readQueue();
-    assert.strictEqual(loaded.prompts.length, 3);
-    assert.deepStrictEqual(loaded.prompts[1].dependsOn, [a.id]);
-    assert.deepStrictEqual(loaded.prompts[2].dependsOn, [b.id]);
-
-    // Validate the loaded DAG
-    const validation = validateDAG(loaded.prompts);
-    assert.ok(validation.valid);
+    // getDependents with sessionId should find B
+    const dependents = de.getDependents(sA.id);
+    assert.strictEqual(dependents.length, 1);
+    assert.strictEqual(dependents[0].id, pB.id);
   });
 
-  // ── 9. Chain status summary ─────────────────────────────
+  // ── 8. allDependenciesMet ────────────────────────────────────
 
-  it('should produce correct chain status summary', () => {
-    const a = makePrompt({ name: 'A', status: 'launched', sessionId: 'sa' });
-    const b = makePrompt({ name: 'B', status: 'launched', sessionId: 'sb', dependsOn: [a.id] });
-    const c = makePrompt({ name: 'C', status: 'queued', dependsOn: [b.id] });
+  it('allDependenciesMet returns correct status', async () => {
+    const pA = await qm.addPrompt({ name: 'A', prompt: 'Do A' });
+    const pB = await qm.addPrompt({ name: 'B', prompt: 'Do B', dependsOn: [pA.id] });
 
-    const prompts = [a, b, c];
-    const sessions: SessionsFile = {
-      sessions: [
-        { id: 'sa', name: 'A', status: 'complete' },
-        { id: 'sb', name: 'B', status: 'running' },
-      ],
-    };
+    // B's deps not met (A not launched)
+    assert.ok(!de.allDependenciesMet(pB.id));
 
-    // Count statuses manually
-    let complete = 0;
-    let running = 0;
-    let queued = 0;
+    // Launch and complete A
+    const sA = await qm.launchPrompt(pA.id);
+    assert.ok(!de.allDependenciesMet(pB.id)); // still not met (running)
 
-    for (const p of prompts) {
-      if (p.status === 'launched' && p.sessionId) {
-        const s = sessions.sessions.find(s => s.id === p.sessionId);
-        if (s?.status === 'complete') { complete++; }
-        else if (s?.status === 'running') { running++; }
-      } else if (p.status === 'queued') {
-        queued++;
-      }
-    }
+    await sm.updateStatus(sA.id, 'complete');
 
-    assert.strictEqual(complete, 1, '1 complete (A)');
-    assert.strictEqual(running, 1, '1 running (B)');
-    assert.strictEqual(queued, 1, '1 queued (C)');
-  });
+    // Wait for microtasks to settle
+    await new Promise(resolve => setTimeout(resolve, 50));
 
-  // ── 10. Manual override ─────────────────────────────────
-
-  it('should allow manual override of dependency check', () => {
-    const a = makePrompt({ name: 'A', status: 'launched', sessionId: 'sa' });
-    const b = makePrompt({ name: 'B', dependsOn: [a.id] });
-
-    const sessions: SessionsFile = {
-      sessions: [
-        { id: 'sa', name: 'A', status: 'running' }, // NOT complete
-      ],
-    };
-
-    // Normal check: not met
-    assert.ok(!allDependenciesMet(b, [a, b], sessions));
-
-    // Force launch: temporarily clear dependencies
-    const savedDeps = b.dependsOn;
-    b.dependsOn = [];
-    assert.ok(allDependenciesMet(b, [a, b], sessions), 'Force launch bypasses dependency check');
-    b.dependsOn = savedDeps; // restore
+    // B's deps should now be met
+    assert.ok(de.allDependenciesMet(pB.id));
   });
 });

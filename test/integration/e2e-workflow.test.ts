@@ -1,22 +1,14 @@
 /**
  * Conductor — Integration test: End-to-End Multi-Session Workflow.
  *
- * Simulates a complete multi-session workflow:
- * 1. Launch Conductor — verify status board shows "No sessions."
- * 2. Add 4 prompts with dependencies: A, B (depends A), C (depends A), D (depends B+C).
- * 3. Launch A from the queue.
- * 4. Simulate A needing approval — verify approval appears.
- * 5. Approve it — verify A continues.
- * 6. Simulate A's agent producing a [CONDUCTOR_TASK] — verify task surfaces.
- * 7. Simulate A completing — verify B and C become launchable.
- * 8. Verify output streaming produces SessionOutputEvents.
- * 9. Simulate B and C completing — verify D becomes launchable.
- * 10. Verify chain status summary is accurate at each step.
- *
- * This test exercises the queue, dependency, approval, task detection,
- * and JSONL output event logic without VS Code APIs.
- *
- * Run: npx mocha --require ts-node/register test/integration/e2e-workflow.test.ts
+ * Full 4-session diamond workflow exercising real engines:
+ *   a. Add 4 prompts: A, B (depends A), C (depends A), D (depends B+C)
+ *   b. Launch A
+ *   c. Simulate approval needed → approve it
+ *   d. Simulate CONDUCTOR_TASK in output → verify task detected
+ *   e. Simulate A completing → verify B and C auto-launch
+ *   f. Simulate B and C completing → verify D auto-launches
+ *   g. Verify chain status summary accurate at each step
  */
 
 import * as fs from 'fs';
@@ -25,469 +17,306 @@ import * as os from 'os';
 import * as assert from 'assert';
 import { v4 as uuid } from 'uuid';
 
-// ── Types (matching extension types) ────────────────────────────
+import { SessionManager } from '../../src/core/SessionManager';
+import { QueueManager } from '../../src/core/QueueManager';
+import { DependencyEngine } from '../../src/core/DependencyEngine';
+import { ApprovalEngine } from '../../src/core/ApprovalEngine';
+import type { DependencyEvent, ChainStatus } from '../../src/core/DependencyEngine';
+import { matchTasks, parseStructuredTask } from '../../src/utils/patternMatcher';
+import { registerProvider, clearProviders } from '../../src/providers';
+import { createMockProvider } from '../helpers/mockProvider';
 
-interface QueuedPrompt {
-  id: string;
-  name: string;
-  description: string;
-  prompt: string;
-  providerId: string;
-  parallelSafe: boolean;
-  complexity: 'small' | 'medium' | 'large';
-  dependsOn: string[];
-  status: 'queued' | 'launched' | 'cancelled';
-  sessionId: string | null;
-  position: number;
-  createdAt: string;
-  launchedAt: string | null;
-}
+// ── Event helpers ────────────────────────────────────────────────
 
-interface QueueFile { prompts: QueuedPrompt[]; }
+function waitForDependencyEvent(
+  engine: DependencyEngine,
+  type: DependencyEvent['type'],
+  timeoutMs = 5000,
+): Promise<DependencyEvent> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      disposable.dispose();
+      reject(new Error(`Timed out waiting for '${type}' event after ${timeoutMs}ms`));
+    }, timeoutMs);
 
-interface ConductorSession {
-  id: string;
-  name: string;
-  providerId: string;
-  workspacePath: string;
-  prompt: string;
-  status: 'queued' | 'running' | 'waiting' | 'complete' | 'error' | 'blocked';
-  pid: number | null;
-  terminalId: string | null;
-  hookInstalled: boolean;
-  dependsOn: string[];
-  templateId: string | null;
-  createdAt: string;
-  launchedAt: string | null;
-  completedAt: string | null;
-  exitCode: number | null;
-  metadata: Record<string, unknown>;
-}
-
-interface SessionsFile { sessions: ConductorSession[]; }
-
-interface PendingApproval {
-  id: string;
-  sessionId: string;
-  sessionName: string;
-  tool: string;
-  command: string;
-  context: string;
-  timestamp: string;
-  status: 'pending' | 'approved' | 'denied';
-  resolvedAt: string | null;
-}
-
-interface HumanTask {
-  id: string;
-  sessionId: string;
-  sessionName: string;
-  description: string;
-  priority: 'urgent' | 'normal' | 'low';
-  blocking: boolean;
-  status: 'pending' | 'in-progress' | 'complete';
-  captureMethod: string;
-  context: string;
-  surfacedAt: string;
-  completedAt: string | null;
-}
-
-// ── Test helpers ────────────────────────────────────────────────
-
-function createTmpDir(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'conductor-e2e-'));
-}
-
-function writeJson(filePath: string, data: unknown): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-}
-
-function readJson<T>(filePath: string): T {
-  return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as T;
-}
-
-function makePrompt(
-  name: string,
-  position: number,
-  dependsOn: string[] = [],
-  id?: string,
-): QueuedPrompt {
-  return {
-    id: id ?? uuid(),
-    name,
-    description: `Test prompt: ${name}`,
-    prompt: `Do task ${name}`,
-    providerId: 'claude-code',
-    parallelSafe: dependsOn.length === 0,
-    complexity: 'small',
-    dependsOn,
-    status: 'queued',
-    sessionId: null,
-    position,
-    createdAt: new Date().toISOString(),
-    launchedAt: null,
-  };
-}
-
-function makeSession(
-  name: string,
-  status: ConductorSession['status'] = 'running',
-  dependsOn: string[] = [],
-): ConductorSession {
-  return {
-    id: uuid(),
-    name,
-    providerId: 'claude-code',
-    workspacePath: '/tmp/test-workspace',
-    prompt: `Do task ${name}`,
-    status,
-    pid: status === 'running' || status === 'waiting' ? 12345 : null,
-    terminalId: null,
-    hookInstalled: true,
-    dependsOn,
-    templateId: null,
-    createdAt: new Date().toISOString(),
-    launchedAt: status !== 'queued' ? new Date().toISOString() : null,
-    completedAt: status === 'complete' ? new Date().toISOString() : null,
-    exitCode: status === 'complete' ? 0 : null,
-    metadata: {},
-  };
-}
-
-function makeApproval(sessionId: string, sessionName: string): PendingApproval {
-  return {
-    id: uuid(),
-    sessionId,
-    sessionName,
-    tool: 'Bash',
-    command: 'npm install express',
-    context: 'Installing dependency for server setup',
-    timestamp: new Date().toISOString(),
-    status: 'pending',
-    resolvedAt: null,
-  };
-}
-
-function makeJsonlContent(entries: object[]): string {
-  return entries.map(e => JSON.stringify(e)).join('\n') + '\n';
-}
-
-// ── Helper: check which prompts are launchable ──────────────────
-
-function getLaunchablePrompts(
-  queue: QueuedPrompt[],
-  sessions: ConductorSession[],
-): QueuedPrompt[] {
-  const completedSessionIds = new Set(
-    sessions
-      .filter(s => s.status === 'complete')
-      .map(s => s.id),
-  );
-
-  // Build a map of promptId → sessionId for launched prompts
-  const promptToSession = new Map<string, string>();
-  for (const p of queue) {
-    if (p.sessionId) {
-      promptToSession.set(p.id, p.sessionId);
-    }
-  }
-
-  return queue.filter(p => {
-    if (p.status !== 'queued') { return false; }
-    // All dependencies must be completed
-    return p.dependsOn.every(depId => {
-      // depId could be a prompt ID — find its session
-      const depPrompt = queue.find(q => q.id === depId);
-      if (depPrompt?.sessionId) {
-        return completedSessionIds.has(depPrompt.sessionId);
+    const disposable = engine.onDependencyEvent((event: DependencyEvent) => {
+      if (event.type === type) {
+        clearTimeout(timer);
+        disposable.dispose();
+        resolve(event);
       }
-      // Or depId is a session ID directly
-      return completedSessionIds.has(depId);
     });
   });
 }
 
-// ── Test: detect [CONDUCTOR_TASK] from output ──────────────────
+function waitForMultipleDependencyEvents(
+  engine: DependencyEngine,
+  type: DependencyEvent['type'],
+  count: number,
+  timeoutMs = 5000,
+): Promise<DependencyEvent[]> {
+  return new Promise((resolve, reject) => {
+    const collected: DependencyEvent[] = [];
+    const timer = setTimeout(() => {
+      disposable.dispose();
+      reject(new Error(
+        `Timed out: expected ${count} '${type}' events, got ${collected.length} after ${timeoutMs}ms`,
+      ));
+    }, timeoutMs);
 
-function extractTasks(content: string): HumanTask[] {
-  const tasks: HumanTask[] = [];
-  const re = /\[CONDUCTOR_TASK\]\s*\n([\s\S]*?)\[\/CONDUCTOR_TASK\]/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(content)) !== null) {
-    const body = match[1];
-    const desc = body.match(/description:\s*(.*)/)?.[1]?.trim() ?? '';
-    const priority = body.match(/priority:\s*(urgent|normal|low)/)?.[1] as 'normal' ?? 'normal';
-    const blocking = body.match(/blocking:\s*(true|false)/)?.[1] === 'true';
-
-    tasks.push({
-      id: uuid(),
-      sessionId: '',
-      sessionName: '',
-      description: desc,
-      priority,
-      blocking,
-      status: 'pending',
-      captureMethod: 'agent-tagged',
-      context: body,
-      surfacedAt: new Date().toISOString(),
-      completedAt: null,
+    const disposable = engine.onDependencyEvent((event: DependencyEvent) => {
+      if (event.type === type) {
+        collected.push(event);
+        if (collected.length >= count) {
+          clearTimeout(timer);
+          disposable.dispose();
+          resolve(collected);
+        }
+      }
     });
-  }
-  return tasks;
+  });
 }
 
-// ── Tests ───────────────────────────────────────────────────────
+function assertChainStatus(
+  actual: ChainStatus,
+  expected: Partial<ChainStatus>,
+  label: string,
+): void {
+  for (const [key, value] of Object.entries(expected)) {
+    assert.strictEqual(
+      (actual as any)[key],
+      value,
+      `${label}: expected ${key}=${value}, got ${(actual as any)[key]}`,
+    );
+  }
+}
+
+// ── Suite ────────────────────────────────────────────────────────
 
 describe('E2E Multi-Session Workflow', () => {
-  let tmpDir: string;
+  let tmpHome: string;
+  let origHome: string | undefined;
+  let sm: SessionManager;
+  let qm: QueueManager;
+  let de: DependencyEngine;
+  let ae: ApprovalEngine;
+  const workspacePath = '/tmp/test-workspace';
 
-  beforeEach(() => {
-    tmpDir = createTmpDir();
+  beforeEach(async () => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'conductor-e2e-integ-'));
+    origHome = process.env.HOME;
+    process.env.HOME = tmpHome;
+
+    fs.mkdirSync(path.join(tmpHome, '.conductor', 'queue'), { recursive: true });
+
+    clearProviders();
+    const mock = createMockProvider();
+    registerProvider(mock.provider);
+
+    sm = new SessionManager();
+    qm = new QueueManager(workspacePath, sm as any);
+    de = new DependencyEngine(sm as any, qm as any);
+    ae = new ApprovalEngine();
+
+    await sm.initialise();
+    await qm.initialise();
+    await de.initialise();
+    await ae.initialise();
   });
 
   afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    ae.dispose();
+    de.dispose();
+    qm.dispose();
+    sm.dispose();
+    clearProviders();
+    process.env.HOME = origHome;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  it('Step 1: Empty state shows no sessions', () => {
-    const sessionsFile = path.join(tmpDir, 'sessions.json');
-    writeJson(sessionsFile, { sessions: [] });
+  // ── Full E2E workflow ─────────────────────────────────────────
 
-    const data = readJson<SessionsFile>(sessionsFile);
-    assert.strictEqual(data.sessions.length, 0, 'Should start with no sessions');
-  });
+  it('full 4-session diamond workflow with approvals and task detection', async () => {
+    // ─── Step (a): Add 4 prompts with diamond dependencies ────
+    const pA = await qm.addPrompt({ name: 'Task A', prompt: 'Set up project scaffolding' });
+    const pB = await qm.addPrompt({ name: 'Task B', prompt: 'Build API layer', dependsOn: [pA.id] });
+    const pC = await qm.addPrompt({ name: 'Task C', prompt: 'Build UI components', dependsOn: [pA.id] });
+    const pD = await qm.addPrompt({ name: 'Task D', prompt: 'Integration testing', dependsOn: [pB.id, pC.id] });
 
-  it('Step 2: Add 4 prompts with diamond dependencies A → B,C → D', () => {
-    const promptA = makePrompt('Task A', 0);
-    const promptB = makePrompt('Task B', 1, [promptA.id]);
-    const promptC = makePrompt('Task C', 2, [promptA.id]);
-    const promptD = makePrompt('Task D', 3, [promptB.id, promptC.id]);
+    assert.strictEqual(qm.getQueue().length, 4);
+    assert.ok(de.validateDAG().valid, 'Diamond DAG should be valid');
 
-    const queueFile = path.join(tmpDir, 'queue.json');
-    writeJson(queueFile, { prompts: [promptA, promptB, promptC, promptD] });
+    // Initial chain status: all queued
+    assertChainStatus(de.getChainStatus(), { total: 4, queued: 4, running: 0, complete: 0 }, 'Step a');
 
-    const data = readJson<QueueFile>(queueFile);
-    assert.strictEqual(data.prompts.length, 4);
-    assert.deepStrictEqual(data.prompts[1].dependsOn, [promptA.id]);
-    assert.deepStrictEqual(data.prompts[2].dependsOn, [promptA.id]);
-    assert.deepStrictEqual(data.prompts[3].dependsOn, [promptB.id, promptC.id]);
+    // ─── Step (b): Launch A ───────────────────────────────────
+    const sessionA = await qm.launchPrompt(pA.id);
+    assert.strictEqual(sm.getSession(sessionA.id)!.status, 'running');
+    assert.strictEqual(qm.getPrompt(pA.id)!.status, 'launched');
 
-    // Only A should be launchable (no dependencies)
-    const launchable = getLaunchablePrompts(data.prompts, []);
-    assert.strictEqual(launchable.length, 1);
-    assert.strictEqual(launchable[0].name, 'Task A');
-  });
+    // Chain status: 1 running, 3 queued
+    assertChainStatus(de.getChainStatus(), { running: 1, queued: 3, complete: 0 }, 'Step b');
 
-  it('Step 3-5: Launch A, simulate approval, approve it', () => {
-    // Create session A
-    const sessionA = makeSession('Task A', 'running');
-    const sessionsFile = path.join(tmpDir, 'sessions.json');
-    writeJson(sessionsFile, { sessions: [sessionA] });
+    // ─── Step (c): Simulate approval needed → approve it ──────
+    const approvalId = uuid();
+    const approvalsDir = path.join(tmpHome, '.conductor', 'approvals');
+    const sessionDir = path.join(approvalsDir, sessionA.id);
+    fs.mkdirSync(sessionDir, { recursive: true });
 
-    // Step 4: Simulate A needing approval
-    const approval = makeApproval(sessionA.id, sessionA.name);
-    const approvalDir = path.join(tmpDir, 'approvals', sessionA.id);
-    writeJson(path.join(approvalDir, `${approval.id}.json`), approval);
-
-    // Verify approval exists
-    const approvalFile = readJson<PendingApproval>(
-      path.join(approvalDir, `${approval.id}.json`),
+    // Write pending approval file
+    fs.writeFileSync(
+      path.join(sessionDir, `${approvalId}.json`),
+      JSON.stringify({
+        id: approvalId,
+        sessionId: sessionA.id,
+        sessionName: 'Task A',
+        tool: 'Bash',
+        command: 'npm install express',
+        context: 'Installing server dependency',
+        timestamp: new Date().toISOString(),
+        status: 'pending',
+        resolvedAt: null,
+      }, null, 2),
     );
-    assert.strictEqual(approvalFile.status, 'pending');
-    assert.strictEqual(approvalFile.sessionId, sessionA.id);
 
-    // Update session status to waiting
-    sessionA.status = 'waiting';
-    writeJson(sessionsFile, { sessions: [sessionA] });
+    // Re-scan approvals (engine was initialised before the file was written)
+    // We create a new ApprovalEngine to pick up the file via scanAllApprovals
+    ae.dispose();
+    ae = new ApprovalEngine();
+    await ae.initialise();
 
-    // Step 5: Approve it
-    approval.status = 'approved';
-    approval.resolvedAt = new Date().toISOString();
-    writeJson(path.join(approvalDir, `${approval.id}.json`), approval);
+    assert.strictEqual(ae.getPendingCount(), 1, 'Should detect pending approval');
+    const pending = ae.getPendingApprovals();
+    assert.strictEqual(pending[0].sessionId, sessionA.id);
 
-    const decisionPath = path.join(approvalDir, `${approval.id}.decision.json`);
-    writeJson(decisionPath, { decision: 'allow', resolvedAt: approval.resolvedAt });
+    // Approve it
+    await ae.approveAction(approvalId);
+    assert.strictEqual(ae.getPendingCount(), 0, 'Approval should be resolved');
 
-    // Verify decision written
-    assert.ok(fs.existsSync(decisionPath));
+    // Decision file written
+    const decisionPath = path.join(sessionDir, `${approvalId}.decision.json`);
+    assert.ok(fs.existsSync(decisionPath), 'Decision file should exist');
+    const decision = JSON.parse(fs.readFileSync(decisionPath, 'utf-8'));
+    assert.strictEqual(decision.decision, 'allow');
 
-    // Session resumes running
-    sessionA.status = 'running';
-    writeJson(sessionsFile, { sessions: [sessionA] });
-    const updated = readJson<SessionsFile>(sessionsFile);
-    assert.strictEqual(updated.sessions[0].status, 'running');
-  });
-
-  it('Step 6: Detect [CONDUCTOR_TASK] from session output', () => {
-    const outputContent = `I've completed the database migration. However, you need to restart the Redis service.
+    // ─── Step (d): Simulate CONDUCTOR_TASK → verify detection ─
+    const taskOutput = `I've completed the scaffolding. However, you need to configure the CI pipeline.
 
 [CONDUCTOR_TASK]
-description: Restart the Redis service on the production server
+description: Configure GitHub Actions CI pipeline for the new project
 priority: urgent
 blocking: true
 [/CONDUCTOR_TASK]
 
-Continuing with the next step...`;
+Continuing with the remaining setup...`;
 
-    const tasks = extractTasks(outputContent);
-    assert.strictEqual(tasks.length, 1);
-    assert.strictEqual(tasks[0].description, 'Restart the Redis service on the production server');
-    assert.strictEqual(tasks[0].priority, 'urgent');
-    assert.strictEqual(tasks[0].blocking, true);
+    // Use pattern matcher directly (as TaskDetector does internally)
+    const detectedTasks = matchTasks(taskOutput);
+    const conductorTasks = detectedTasks.filter(t => t.patternName === 'conductor-tag');
+    assert.strictEqual(conductorTasks.length, 1, 'Should detect 1 CONDUCTOR_TASK');
+
+    // Parse structured fields
+    const parsed = parseStructuredTask(taskOutput);
+    assert.ok(parsed, 'Should parse structured task');
+    assert.strictEqual(parsed!.description, 'Configure GitHub Actions CI pipeline for the new project');
+    assert.strictEqual(parsed!.priority, 'urgent');
+    assert.strictEqual(parsed!.blocking, true);
+
+    // ─── Step (e): A completes → B and C auto-launch ──────────
+    const bcAutoLaunch = waitForMultipleDependencyEvents(de, 'auto-launched', 2);
+    await sm.updateStatus(sessionA.id, 'complete');
+
+    const bcEvents = await bcAutoLaunch;
+    const autoLaunchedIds = bcEvents.map(e => e.promptId).sort();
+    const expectedIds = [pB.id, pC.id].sort();
+    assert.deepStrictEqual(autoLaunchedIds, expectedIds, 'B and C should both auto-launch');
+
+    // Verify B and C states
+    assert.strictEqual(qm.getPrompt(pB.id)!.status, 'launched');
+    assert.strictEqual(qm.getPrompt(pC.id)!.status, 'launched');
+    assert.ok(qm.getPrompt(pB.id)!.sessionId);
+    assert.ok(qm.getPrompt(pC.id)!.sessionId);
+
+    const bSessionId = qm.getPrompt(pB.id)!.sessionId!;
+    const cSessionId = qm.getPrompt(pC.id)!.sessionId!;
+    assert.strictEqual(sm.getSession(bSessionId)!.status, 'running');
+    assert.strictEqual(sm.getSession(cSessionId)!.status, 'running');
+
+    // D should still be queued
+    assert.strictEqual(qm.getPrompt(pD.id)!.status, 'queued');
+
+    // Chain status: 1 complete (A), 2 running (B, C), 1 queued (D)
+    assertChainStatus(de.getChainStatus(), { complete: 1, running: 2, queued: 1 }, 'Step e');
+
+    // ─── Step (f): B and C complete → D auto-launches ─────────
+
+    // Complete B first
+    await sm.updateStatus(bSessionId, 'complete');
+    // D should NOT auto-launch yet (C still running)
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.strictEqual(qm.getPrompt(pD.id)!.status, 'queued', 'D should stay queued after only B completes');
+
+    // Chain status: 2 complete, 1 running, 1 queued
+    assertChainStatus(de.getChainStatus(), { complete: 2, running: 1, queued: 1 }, 'Step f.1');
+
+    // Complete C → D should auto-launch
+    const dAutoLaunch = waitForDependencyEvent(de, 'auto-launched');
+    await sm.updateStatus(cSessionId, 'complete');
+
+    const dEvent = await dAutoLaunch;
+    assert.strictEqual(dEvent.promptId, pD.id, 'D should auto-launch after B+C complete');
+
+    assert.strictEqual(qm.getPrompt(pD.id)!.status, 'launched');
+    const dSessionId = qm.getPrompt(pD.id)!.sessionId!;
+    assert.strictEqual(sm.getSession(dSessionId)!.status, 'running');
+
+    // Chain status: 3 complete (A, B, C), 1 running (D)
+    assertChainStatus(de.getChainStatus(), { complete: 3, running: 1, queued: 0 }, 'Step f.2');
+
+    // ─── Step (g): D completes → all done ─────────────────────
+    await sm.updateStatus(dSessionId, 'complete');
+
+    // Final chain status: all 4 complete
+    assertChainStatus(de.getChainStatus(), { total: 4, complete: 4, running: 0, queued: 0, failed: 0 }, 'Step g');
   });
 
-  it('Step 7: A completes → B and C become launchable', () => {
-    const promptA = makePrompt('Task A', 0);
-    const promptB = makePrompt('Task B', 1, [promptA.id]);
-    const promptC = makePrompt('Task C', 2, [promptA.id]);
-    const promptD = makePrompt('Task D', 3, [promptB.id, promptC.id]);
+  // ── Error propagation in diamond ──────────────────────────────
 
-    // Launch A, create a session
-    const sessionA = makeSession('Task A', 'complete');
-    promptA.status = 'launched';
-    promptA.sessionId = sessionA.id;
+  it('error in one branch blocks D but not the other branch', async () => {
+    const pA = await qm.addPrompt({ name: 'A', prompt: 'Do A' });
+    const pB = await qm.addPrompt({ name: 'B', prompt: 'Do B', dependsOn: [pA.id] });
+    const pC = await qm.addPrompt({ name: 'C', prompt: 'Do C', dependsOn: [pA.id] });
+    const pD = await qm.addPrompt({ name: 'D', prompt: 'Do D', dependsOn: [pB.id, pC.id] });
 
-    const queue = [promptA, promptB, promptC, promptD];
-    const sessions = [sessionA];
+    // Launch and complete A → B and C auto-launch
+    const sA = await qm.launchPrompt(pA.id);
+    const bcLaunch = waitForMultipleDependencyEvents(de, 'auto-launched', 2);
+    await sm.updateStatus(sA.id, 'complete');
+    await bcLaunch;
 
-    const launchable = getLaunchablePrompts(queue, sessions);
-    assert.strictEqual(launchable.length, 2);
-    const launchableNames = launchable.map(p => p.name).sort();
-    assert.deepStrictEqual(launchableNames, ['Task B', 'Task C']);
+    // B errors → D should be blocked
+    const bSessionId = qm.getPrompt(pB.id)!.sessionId!;
+    const blockedEvent = waitForDependencyEvent(de, 'blocked');
+    await sm.updateStatus(bSessionId, 'error');
+
+    const blocked = await blockedEvent;
+    assert.strictEqual(blocked.promptId, pD.id, 'D should be blocked when B errors');
+    assert.strictEqual(qm.getPrompt(pD.id)!.status, 'cancelled');
+
+    // C can still complete without issue
+    const cSessionId = qm.getPrompt(pC.id)!.sessionId!;
+    await sm.updateStatus(cSessionId, 'complete');
+
+    // Chain status should reflect the error
+    const status = de.getChainStatus();
+    assert.ok(status.complete >= 2, 'A and C should be complete');
+    assert.ok(status.failed >= 1, 'B and/or D should be failed');
   });
 
-  it('Step 8: JSONL log produces SessionOutputEvents', () => {
-    const jsonlEntries = [
-      {
-        type: 'assistant',
-        message: { role: 'assistant', content: 'Starting the refactor...' },
-        timestamp: '2026-03-19T10:00:00Z',
-      },
-      {
-        type: 'tool_use',
-        name: 'Bash',
-        input: { command: 'npm test' },
-        timestamp: '2026-03-19T10:00:05Z',
-      },
-      {
-        type: 'tool_result',
-        content: 'All 42 tests passed',
-        exit_code: 0,
-        timestamp: '2026-03-19T10:00:10Z',
-      },
-      {
-        type: 'error',
-        content: 'Rate limit exceeded',
-        timestamp: '2026-03-19T10:00:15Z',
-      },
-      {
-        type: 'system',
-        content: 'Session resumed',
-        timestamp: '2026-03-19T10:00:20Z',
-      },
-    ];
+  // ── Multiple CONDUCTOR_TASK blocks ────────────────────────────
 
-    const jsonlPath = path.join(tmpDir, 'test-session.jsonl');
-    fs.writeFileSync(jsonlPath, makeJsonlContent(jsonlEntries));
-
-    // Parse and convert (inline logic matching jsonlParser)
-    const raw = fs.readFileSync(jsonlPath, 'utf-8');
-    const entries = raw.split('\n').filter(l => l.trim()).map(l => JSON.parse(l));
-
-    assert.strictEqual(entries.length, 5);
-    assert.strictEqual(entries[0].type, 'assistant');
-    assert.strictEqual(entries[0].message.content, 'Starting the refactor...');
-    assert.strictEqual(entries[1].type, 'tool_use');
-    assert.strictEqual(entries[1].name, 'Bash');
-    assert.strictEqual(entries[2].type, 'tool_result');
-    assert.strictEqual(entries[3].type, 'error');
-    assert.strictEqual(entries[4].type, 'system');
-  });
-
-  it('Step 9: B and C complete → D becomes launchable', () => {
-    const promptA = makePrompt('Task A', 0);
-    const promptB = makePrompt('Task B', 1, [promptA.id]);
-    const promptC = makePrompt('Task C', 2, [promptA.id]);
-    const promptD = makePrompt('Task D', 3, [promptB.id, promptC.id]);
-
-    const sessionA = makeSession('Task A', 'complete');
-    const sessionB = makeSession('Task B', 'complete');
-    const sessionC = makeSession('Task C', 'complete');
-
-    promptA.status = 'launched';
-    promptA.sessionId = sessionA.id;
-    promptB.status = 'launched';
-    promptB.sessionId = sessionB.id;
-    promptC.status = 'launched';
-    promptC.sessionId = sessionC.id;
-
-    const queue = [promptA, promptB, promptC, promptD];
-    const sessions = [sessionA, sessionB, sessionC];
-
-    const launchable = getLaunchablePrompts(queue, sessions);
-    assert.strictEqual(launchable.length, 1);
-    assert.strictEqual(launchable[0].name, 'Task D');
-  });
-
-  it('Step 10: Chain status summary is accurate', () => {
-    const promptA = makePrompt('Task A', 0);
-    const promptB = makePrompt('Task B', 1, [promptA.id]);
-    const promptC = makePrompt('Task C', 2, [promptA.id]);
-    const promptD = makePrompt('Task D', 3, [promptB.id, promptC.id]);
-
-    const sessionA = makeSession('Task A', 'complete');
-    const sessionB = makeSession('Task B', 'running');
-    const sessionC = makeSession('Task C', 'waiting');
-
-    promptA.status = 'launched';
-    promptA.sessionId = sessionA.id;
-    promptB.status = 'launched';
-    promptB.sessionId = sessionB.id;
-    promptC.status = 'launched';
-    promptC.sessionId = sessionC.id;
-
-    const sessions = [sessionA, sessionB, sessionC];
-
-    // Chain summary
-    const summary = {
-      total: 4,
-      complete: sessions.filter(s => s.status === 'complete').length,
-      running: sessions.filter(s => s.status === 'running').length,
-      waiting: sessions.filter(s => s.status === 'waiting').length,
-      queued: 1, // prompt D still queued
-    };
-
-    assert.strictEqual(summary.total, 4);
-    assert.strictEqual(summary.complete, 1);
-    assert.strictEqual(summary.running, 1);
-    assert.strictEqual(summary.waiting, 1);
-    assert.strictEqual(summary.queued, 1);
-
-    // D should NOT be launchable yet (B running, C waiting)
-    const queue = [promptA, promptB, promptC, promptD];
-    const launchable = getLaunchablePrompts(queue, sessions);
-    assert.strictEqual(launchable.length, 0, 'D should not be launchable while B and C are still active');
-  });
-
-  it('handles session error blocking downstream prompts', () => {
-    const promptA = makePrompt('Task A', 0);
-    const promptB = makePrompt('Task B', 1, [promptA.id]);
-
-    const sessionA = makeSession('Task A', 'error');
-    promptA.status = 'launched';
-    promptA.sessionId = sessionA.id;
-
-    const queue = [promptA, promptB];
-    const sessions = [sessionA];
-
-    // B should NOT be launchable because A errored (not completed)
-    const launchable = getLaunchablePrompts(queue, sessions);
-    assert.strictEqual(launchable.length, 0, 'B should not launch when A has errored');
-  });
-
-  it('handles multiple CONDUCTOR_TASK blocks in output', () => {
-    const outputContent = `Found two issues:
+  it('detects multiple CONDUCTOR_TASK blocks from agent output', () => {
+    const output = `Working on the feature. Found two things that need attention:
 
 [CONDUCTOR_TASK]
 description: Update the DNS records for staging.example.com
@@ -495,20 +324,71 @@ priority: normal
 blocking: false
 [/CONDUCTOR_TASK]
 
-Also:
+Also discovered this:
 
 [CONDUCTOR_TASK]
-description: Restart the CI runner — it has stale credentials
+description: Restart the CI runner — stale credentials
 priority: urgent
 blocking: true
 [/CONDUCTOR_TASK]`;
 
-    const tasks = extractTasks(outputContent);
-    assert.strictEqual(tasks.length, 2);
-    assert.strictEqual(tasks[0].description, 'Update the DNS records for staging.example.com');
-    assert.strictEqual(tasks[0].blocking, false);
-    assert.strictEqual(tasks[1].description, 'Restart the CI runner — it has stale credentials');
-    assert.strictEqual(tasks[1].priority, 'urgent');
-    assert.strictEqual(tasks[1].blocking, true);
+    const tasks = matchTasks(output);
+    const conductorTasks = tasks.filter(t => t.patternName === 'conductor-tag');
+    assert.strictEqual(conductorTasks.length, 2);
+
+    // Parse first block
+    const parsed1 = parseStructuredTask(output);
+    assert.ok(parsed1);
+    assert.strictEqual(parsed1!.description, 'Update the DNS records for staging.example.com');
+    assert.strictEqual(parsed1!.blocking, false);
+  });
+
+  // ── Chain status at every step ────────────────────────────────
+
+  it('chain status is accurate at every step of the workflow', async () => {
+    const pA = await qm.addPrompt({ name: 'A', prompt: 'Do A' });
+    const pB = await qm.addPrompt({ name: 'B', prompt: 'Do B', dependsOn: [pA.id] });
+    const pC = await qm.addPrompt({ name: 'C', prompt: 'Do C', dependsOn: [pA.id] });
+    const pD = await qm.addPrompt({ name: 'D', prompt: 'Do D', dependsOn: [pB.id, pC.id] });
+
+    // Step 0: all queued
+    assertChainStatus(de.getChainStatus(),
+      { total: 4, queued: 4, running: 0, complete: 0, failed: 0 },
+      'All queued');
+
+    // Step 1: A running
+    const sA = await qm.launchPrompt(pA.id);
+    assertChainStatus(de.getChainStatus(),
+      { running: 1, queued: 3 },
+      'A running');
+
+    // Step 2: A complete, B+C auto-launch
+    const bc = waitForMultipleDependencyEvents(de, 'auto-launched', 2);
+    await sm.updateStatus(sA.id, 'complete');
+    await bc;
+    assertChainStatus(de.getChainStatus(),
+      { complete: 1, running: 2, queued: 1 },
+      'A done, B+C running');
+
+    // Step 3: B complete
+    await sm.updateStatus(qm.getPrompt(pB.id)!.sessionId!, 'complete');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assertChainStatus(de.getChainStatus(),
+      { complete: 2, running: 1, queued: 1 },
+      'A+B done, C running');
+
+    // Step 4: C complete → D auto-launches
+    const dLaunch = waitForDependencyEvent(de, 'auto-launched');
+    await sm.updateStatus(qm.getPrompt(pC.id)!.sessionId!, 'complete');
+    await dLaunch;
+    assertChainStatus(de.getChainStatus(),
+      { complete: 3, running: 1, queued: 0 },
+      'A+B+C done, D running');
+
+    // Step 5: D complete → all done
+    await sm.updateStatus(qm.getPrompt(pD.id)!.sessionId!, 'complete');
+    assertChainStatus(de.getChainStatus(),
+      { total: 4, complete: 4, running: 0, queued: 0, failed: 0 },
+      'All complete');
   });
 });
