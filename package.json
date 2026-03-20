@@ -471,7 +471,8 @@
     "pretest": "npm run compile-tests && npm run compile",
     "lint": "eslint src --ext ts",
     "test": "vscode-test",
-    "test-compile": "tsc -p . --outDir out"
+    "test-compile": "tsc -p . --outDir out",
+    "test:unit": "tsc -p tsconfig.test.json && cp -r test/fixtures out/test/test/ && mocha"
   },
   "devDependencies": {
     "@types/chai": "^4.3.11",
