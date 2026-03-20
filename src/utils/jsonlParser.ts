@@ -8,6 +8,7 @@
  */
 
 import * as fs from 'fs';
+import * as vscode from 'vscode';
 import type { SessionOutputEvent, SessionStatus } from '../types';
 
 /** Raw shape of a single JSONL entry from Claude Code logs. */
@@ -159,6 +160,59 @@ export function inferStatusFromEntries(entries: JsonlEntry[]): SessionStatus {
   }
 
   return 'running';
+}
+
+/**
+ * Watch a JSONL file for new entries appended after the current end.
+ * The callback is fired with each new parsed entry as it appears.
+ * Returns a Disposable that stops watching when disposed.
+ */
+export function watchNewEntries(
+  filePath: string,
+  callback: (entry: JsonlEntry) => void,
+): vscode.Disposable {
+  let lastSize = 0;
+
+  // Seed the initial size so we only watch for *new* appended content
+  try {
+    lastSize = fs.statSync(filePath).size;
+  } catch {
+    lastSize = 0;
+  }
+
+  const watcher = fs.watch(filePath, { persistent: false }, () => {
+    let size = 0;
+    try {
+      size = fs.statSync(filePath).size;
+    } catch {
+      return;
+    }
+
+    if (size <= lastSize) {return;}
+
+    // Read only the new bytes
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(size - lastSize);
+    fs.readSync(fd, buf, 0, buf.length, lastSize);
+    fs.closeSync(fd);
+    lastSize = size;
+
+    const newText = buf.toString('utf-8');
+    for (const line of newText.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) {continue;}
+      try {
+        const entry = JSON.parse(trimmed) as JsonlEntry;
+        callback(entry);
+      } catch {
+        // Skip malformed lines
+      }
+    }
+  });
+
+  return new vscode.Disposable(() => {
+    try { watcher.close(); } catch { /* ignore */ }
+  });
 }
 
 // ── Content extraction helpers ──────────────────────────────────

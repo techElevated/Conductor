@@ -1,0 +1,69 @@
+{
+  "tasks": [
+    {
+      "id": "task-001",
+      "sessionId": "session-abc",
+      "sessionName": "6.5A — API refactor",
+      "description": "Restart the gateway service after the migration completes",
+      "priority": "urgent",
+      "blocking": true,
+      "status": "pending",
+      "captureMethod": "agent-tagged",
+      "context": "[CONDUCTOR_TASK]\ndescription: Restart the gateway service after the migration completes\npriority: urgent\nblocking: true\n[/CONDUCTOR_TASK]",
+      "surfacedAt": "2026-03-19T10:05:00.000Z",
+      "completedAt": null
+    },
+    {
+      "id": "task-002",
+      "sessionId": "session-abc",
+      "sessionName": "6.5A — API refactor",
+      "description": "Run npm run migrate to apply the database migration",
+      "priority": "normal",
+      "blocking": false,
+      "status": "pending",
+      "captureMethod": "convention-parsed",
+      "context": "Run `npm run migrate` to apply the database schema changes before restarting.",
+      "surfacedAt": "2026-03-19T10:06:00.000Z",
+      "completedAt": null
+    },
+    {
+      "id": "task-003",
+      "sessionId": "session-def",
+      "sessionName": "6.5B — Cache layer",
+      "description": "Configure Redis connection in the .env file",
+      "priority": "normal",
+      "blocking": false,
+      "status": "pending",
+      "captureMethod": "convention-parsed",
+      "context": "Configure the Redis connection in the .env file using the credentials from the secrets manager.",
+      "surfacedAt": "2026-03-19T10:10:00.000Z",
+      "completedAt": null
+    },
+    {
+      "id": "task-004",
+      "sessionId": "session-ghi",
+      "sessionName": "6.5C — UI polish",
+      "description": "Review the Figma designs for the dashboard component",
+      "priority": "low",
+      "blocking": false,
+      "status": "complete",
+      "captureMethod": "manual",
+      "context": "Please review the Figma designs before I implement the dashboard component.",
+      "surfacedAt": "2026-03-19T09:30:00.000Z",
+      "completedAt": "2026-03-19T09:45:00.000Z"
+    },
+    {
+      "id": "task-005",
+      "sessionId": "session-jkl",
+      "sessionName": "6.5D — Integration tests",
+      "description": "Enable the feature flag in staging environment",
+      "priority": "urgent",
+      "blocking": true,
+      "status": "in-progress",
+      "captureMethod": "agent-tagged",
+      "context": "[CONDUCTOR_TASK]\ndescription: Enable the feature flag in staging environment\npriority: urgent\nblocking: true\n[/CONDUCTOR_TASK]",
+      "surfacedAt": "2026-03-19T10:15:00.000Z",
+      "completedAt": null
+    }
+  ]
+}
